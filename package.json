@@ -1,0 +1,38 @@
+{
+  "name": "paseo-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "Paseo plugin: plan releases, features and tasks, start tasks as agents, drive it from ChatGPT through God Mode",
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "client/",
+    "server/",
+    "shared/",
+    "scripts/edition.mjs",
+    "!**/*.test.ts"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/edition.mjs dev",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "sizes": "node scripts/response-sizes.ts"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.13.0",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^22.20.5",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  }
+}

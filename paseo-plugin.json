@@ -1,0 +1,22 @@
+{
+  "id": "dashboard",
+  "name": "Paseo Dash",
+  "version": "0.1.0",
+  "description": "Plan releases, features and tasks across a project's repositories, start a task as an agent, and follow it, from Paseo and from ChatGPT through God Mode.",
+  "requirements": {
+    "paseo": ">=0.13.0"
+  },
+  "build": [
+    [
+      "npm",
+      "ci",
+      "--omit=dev",
+      "--ignore-scripts"
+    ],
+    [
+      "node",
+      "scripts/edition.mjs",
+      "release"
+    ]
+  ]
+}
