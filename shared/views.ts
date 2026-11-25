@@ -110,6 +110,8 @@ export const taskViewRpc = defineRpc({
      * created, as this machine last read them (03-model.md, Work merged outside the dashboard).
      */
     merged: z.array(mergedPr),
+    /** When a person archived the finished task, as spoken ("2 days ago"); empty when it is not archived. */
+    archived: z.string(),
     /** What a person may do with the task from this machine now. */
     actions: z.object({
       /** Why it cannot start from here; empty when it can (a blocked task only with "Start anyway"). */
@@ -121,8 +123,13 @@ export const taskViewRpc = defineRpc({
       continue: z.boolean(),
       /** A tracked trunk checkout landed and its workspace is archived: "Mark done" comes first. */
       landed_done: z.boolean(),
-      /** Todo without a run: mark done or cancel directly. */
+      /** Todo, or unheld, without a run: mark done or cancel directly. */
       close: z.boolean(),
+      /**
+       * In progress with no live run (a session outside the dashboard or a hand edit set it):
+       * done, back to todo, cancel, or a start that claims it again (03-model.md, Statuses).
+       */
+      unheld: z.boolean(),
       /** Done or canceled: back to todo. */
       reopen: z.boolean(),
       /** An inbox draft: accept, merge or reject. */
@@ -131,6 +138,10 @@ export const taskViewRpc = defineRpc({
       line: z.string(),
       /** No live run, and a run of this Mac left its own (not a tracked) workspace unarchived. */
       archive: z.boolean(),
+      /** Done or canceled and still on the board: archive the task (03-model.md, Archive). */
+      archive_task: z.boolean(),
+      /** Archived: put it back on the board. */
+      unarchive: z.boolean(),
     }),
     error: z.string(),
   }),
@@ -211,6 +222,8 @@ export const featureViewRpc = defineRpc({
     milestone: z.string(),
     done: z.number().int(),
     total: z.number().int(),
+    /** Its done and canceled tasks not archived yet: "Archive finished" takes them off the board. */
+    finished: z.number().int(),
     /** Dependency layers inside the feature: phase 1 depends on nothing in it, phase 2 on phase 1, … */
     phases: z.array(
       z.array(

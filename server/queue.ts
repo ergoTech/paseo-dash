@@ -147,8 +147,14 @@ export function setAutopilot(ctx: WriteContext, input: RpcInput<typeof autopilot
   // A flag changes only when `on` is given; the limit alone changes nothing else.
   if (input.on !== undefined || input.max_running) autopilot.set({ space, ...(input.on !== undefined ? key : {}), on: input.on ?? false, max_running: input.max_running });
   if (input.resume) autopilot.resume(space, key);
-  if (input.start_new_tasks !== undefined || input.start_mode || input.start_effort) {
-    autopilot.setStartDefaults({ new_tasks: input.start_new_tasks, mode: input.start_mode, mode_provider: input.start_mode_provider, effort: input.start_effort });
+  if (input.start_new_tasks !== undefined || input.start_mode || input.start_effort || input.start_auto_model !== undefined) {
+    autopilot.setStartDefaults({
+      new_tasks: input.start_new_tasks,
+      mode: input.start_mode,
+      mode_provider: input.start_mode_provider,
+      effort: input.start_effort,
+      auto_model: input.start_auto_model,
+    });
   }
   // A change of flags or of the limit is worth a pass at once rather than at the next sync, also when a
   // pass under way read them before the change.

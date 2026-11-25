@@ -226,7 +226,7 @@ test("a reused workspace found on another branch at launch is left as it is, not
       base: undefined,
       workspace: { kind: "reuse", workspaceId: first.workspaceId! },
       prompt: "P",
-      settings: { provider: "claude/claude-haiku-5-5", label: "Review", mode: "", modes: [], asks: false, effort: "", efforts: [] },
+      settings: { provider: "claude/claude-haiku-5-5", label: "Review", mode: "", modes: [], asks: false, effort: "", efforts: [], modelId: "claude-haiku-5-5", model: "", models: [], profiles: [] },
       started: "2026-10-26T10:00:00Z",
     });
     await settled(() => run.activity !== "launching");

@@ -96,6 +96,8 @@ const fileSchema = z.object({
       /** Mode ids mean different things per provider (Codex's `auto` is its "Default Permissions"): the mode is this provider's only. */
       mode_provider: z.string(),
       effort: z.string(),
+      /** Claude's model and effort picked per task (server/runner/model-policy.ts); absent in files written before it: on. */
+      auto_model: z.boolean().optional(),
     })
     .optional(),
 });
@@ -107,8 +109,8 @@ export const DEFAULT_MAX_RUNNING = 3;
  * "Auto mode" with effort "High". A provider or model without that id falls through, saying so
  * (server/runner/profiles.ts).
  */
-export const DEFAULT_START = { new_tasks: true, mode: "auto", mode_provider: "claude", effort: "high" } as const;
-export type StartDefaults = { new_tasks: boolean; mode: string; mode_provider: string; effort: string };
+export const DEFAULT_START = { new_tasks: true, mode: "auto", mode_provider: "claude", effort: "high", auto_model: true } as const;
+export type StartDefaults = { new_tasks: boolean; mode: string; mode_provider: string; effort: string; auto_model: boolean };
 /**
  * A flag no finished pass has checked: Paseo Dash just woke up (daemon or plugin restart) and has not
  * synced the plans yet, or the flag was set after the last pass.
@@ -229,6 +231,7 @@ export class Autopilot {
       next.mode_provider = input.mode_provider;
     }
     if (input.effort) next.effort = input.effort;
+    if (input.auto_model !== undefined) next.auto_model = input.auto_model;
     this.file.start = next;
     this.save();
   }

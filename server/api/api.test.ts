@@ -189,6 +189,30 @@ test("updating tasks follows the transition table and never touches a live run",
   }
 });
 
+test("update_task names, changes and takes off the agent profile of a task, as this Mac has it", async () => {
+  const s = await setup();
+  try {
+    assert.equal(getTask(s.ctx, { task: "TST-FX001" }).agent_profile, "");
+    const set = await updateTask(s.ctx, { task: "TST-FX001", agent_profile: " review " });
+    assert.deepEqual([set.ok, set.changed], [true, ["agent_profile"]]);
+    assert.equal(getTask(s.ctx, { task: "TST-FX001" }).agent_profile, "Review", "stored as the profile is spelled");
+    assert.match((await startCheck(s.ctx, { task: "TST-FX001" })).profile, /Review \(the task's\)/, "a start uses it");
+    const again = await updateTask(s.ctx, { task: "TST-FX001", agent_profile: "Review" });
+    assert.deepEqual([again.ok, again.changed], [true, []]);
+    const unknown = await updateTask(s.ctx, { task: "TST-FX001", agent_profile: "Sonnet 5.5 High", title: "Renamed" });
+    assert.equal(unknown.ok, false);
+    assert.match(unknown.error, /no agent profile «Sonnet 5\.5 High» on this Mac; profiles: Review\. Nothing was changed\./);
+    assert.equal(getTask(s.ctx, { task: "TST-FX001" }).title, "Fix flaky login test", "a refusal changes nothing");
+    assert.equal(getTask(s.ctx, { task: "TST-FX001" }).agent_profile, "Review");
+    const off = await updateTask(s.ctx, { task: "TST-FX001", agent_profile: "" });
+    assert.deepEqual([off.ok, off.changed], [true, ["agent_profile"]]);
+    assert.equal(getTask(s.ctx, { task: "TST-FX001" }).agent_profile, "");
+    assert.deepEqual((await updateTask(s.ctx, { task: "TST-FX001", agent_profile: "" })).changed, [], "nothing to take off");
+  } finally {
+    s.stop();
+  }
+});
+
 test("a start check says the agent's objection first, then the base branch's, then the branch's", async () => {
   const s = await setup();
   try {
@@ -214,7 +238,7 @@ test("a start is checked first: blocked, held and unmapped rules; a startable ta
     assert.match((await startCheck(s.ctx, { task: "login" })).error, /2 tasks match/);
     const facts = await startCheck(s.ctx, { task: "TST-FX001", profile: "Review" });
     assert.equal(facts.error, "");
-    assert.deepEqual([facts.title, facts.project, facts.branch, facts.profile, facts.workspace], ["Fix flaky login test", "core", "feat/login", "Review (asked for)", "a new worktree, «TST-FX001 · Fix flaky login test»"]);
+    assert.deepEqual([facts.title, facts.project, facts.branch, facts.profile, facts.workspace], ["Fix flaky login test", "core", "feat/login", "Review (asked for); model claude-haiku-5-5 (the profile's)", "a new worktree, «TST-FX001 · Fix flaky login test»"]);
     assert.equal(facts.instructions, "not seen by you yet (per git: ergo)");
     const started = await startTask(s.ctx, { task: "TST-FX001" });
     assert.equal(started.ok, true, started.error);

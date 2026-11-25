@@ -1,4 +1,4 @@
-import { hasLiveRun, type Task } from "../../shared/model.ts";
+import { hasLiveRun, type Task, unheld } from "../../shared/model.ts";
 import type { StartDecision } from "../../shared/api.ts";
 import type { Dashboard } from "../dashboard.ts";
 import type { Plan } from "../plan/load.ts";
@@ -50,6 +50,9 @@ const HUMAN_NEXT =
 
 const HUMAN_HELD_NEXT = "the user does this work, or removes the label; a start of it alone would be refused now too: tell the user both reasons";
 
+/** What a start of an unheld task says it claims: the status no run of this dashboard holds. */
+export const UNHELD_REASON = (status: string) => `${status} with no live run (set outside the dashboard); a start claims it for a new run`;
+
 const verdict = (decision: StartDecision, reason: string, next: string, extra: Partial<Verdict> = {}): Verdict => ({
   decision,
   order: 0,
@@ -80,6 +83,7 @@ function stateVerdict(dashboard: Dashboard, task: Task, host: string): Verdict |
       return verdict("needs_owner", "an inbox draft, not accepted as a task", DRAFT_NEXT, { needs: "draft" });
     case "review":
       return verdict("needs_owner", "its work is in review", REVIEW_NEXT, { needs: "review" });
+    // In progress with no live run (unheld) starts as a todo task does: the start checks decide.
     case "done":
     case "canceled":
       return verdict("finished", `it is ${task.status}`, "nothing to start");
@@ -164,7 +168,7 @@ export function decideSet(dashboard: Dashboard, host: string, items: SetItem[]):
         { order, waits_for: waits },
       );
     } else {
-      result = verdict("can_start", "todo, nothing to wait for, its project mapped here", "", { order: 1 });
+      result = verdict("can_start", unheld(task) ? `${UNHELD_REASON(task.status)}, nothing to wait for, its project mapped here` : "todo, nothing to wait for, its project mapped here", "", { order: 1 });
     }
     out.set(task.id, result);
     return result;

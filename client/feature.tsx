@@ -1,5 +1,6 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { StartReadyButton } from "./queue.tsx";
+import { ArchiveTasksDialog } from "./actions.tsx";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
@@ -59,6 +60,7 @@ export function FeatureDetail({ id, theme, compact, here, header }: {
   const f = query.data;
   // "+ task" prefills the feature, and the project when it is one the feature plans for.
   const [creating, setCreating] = useState<{ project: string } | undefined>();
+  const [archiving, setArchiving] = useState(false);
   const show = useShow(here);
   // Previous and next walk the feature's tasks in phase order.
   const list = f?.found ? f.phases.flat().map((t) => ({ id: t.id, title: t.title })) : [];
@@ -105,7 +107,19 @@ export function FeatureDetail({ id, theme, compact, here, header }: {
               <Button key={project} label={`+ task for ${project}`} ghost onPress={() => setCreating({ project })} styles={styles} />
             ))}
             <Button label="+ task" ghost onPress={() => setCreating({ project: "" })} styles={styles} />
+            {f.finished ? <Button label={`Archive finished (${f.finished})…`} ghost onPress={() => setArchiving(true)} styles={styles} /> : null}
           </View>
+          {archiving ? (
+            <ArchiveTasksDialog
+              finishedOf={{ space: f.space, feature: f.id }}
+              title={f.title}
+              note={`The feature's ${f.finished} done and canceled task${f.finished === 1 ? "" : "s"} leave the board.`}
+              archived
+              open
+              onClose={() => setArchiving(false)}
+              styles={styles}
+            />
+          ) : null}
           {creating ? <TaskForm space={f.space} initial={{ feature: f.id, project: creating.project }} open onClose={() => setCreating(undefined)} styles={styles} theme={theme} /> : null}
         </>
       ) : null}

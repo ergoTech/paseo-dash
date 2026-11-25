@@ -74,7 +74,7 @@ test("profiles: an asked one must exist here; without any, this Mac's first prov
   const s = await setup({ profiles: [PROFILE], providers: ["claude-work", "codex"] });
   try {
     assert.match((await startCheck(s.ctx, { task: "TST-FX001", profile: "Implementation" })).error, /no agent profile «Implementation» on this Mac; profiles: Review/);
-    assert.equal((await startCheck(s.ctx, { task: "TST-FX001" })).profile, "claude-work with its defaults (this Mac's)");
+    assert.equal((await startCheck(s.ctx, { task: "TST-FX001" })).profile, "claude-work with its defaults (this Mac's); model claude-work-default (the provider's default)");
   } finally {
     s.stop();
   }
@@ -534,7 +534,7 @@ test("a start whose claim was undecided waits, then launches when the claim is w
       branch: "feat/login",
       base: undefined,
       prompt: "P",
-      settings: { provider: "claude/claude-haiku-5-5", label: "Review", mode: "", modes: [], asks: false, effort: "", efforts: [] },
+      settings: { provider: "claude/claude-haiku-5-5", label: "Review", mode: "", modes: [], asks: false, effort: "", efforts: [], modelId: "claude-haiku-5-5", model: "", models: [], profiles: [] },
       started: "2026-10-26T08:00:00Z",
     };
     holdTask(s, "r-won");
@@ -563,7 +563,7 @@ test("a task's or space's profile missing on this Mac is skipped to this Mac's d
       writeFileSync(path, readFileSync(path, "utf8").replace("status: todo\n", "status: todo\nagent_profile: Ghost\n"));
     });
     await s.sync().sync();
-    assert.equal((await startCheck(s.ctx, { task: "TST-FX001" })).profile, "claude-work with its defaults (this Mac's; «Ghost» not on this Mac)");
+    assert.equal((await startCheck(s.ctx, { task: "TST-FX001" })).profile, "claude-work with its defaults (this Mac's; «Ghost» not on this Mac); model claude-work-default (the provider's default)");
   } finally {
     s.stop();
   }

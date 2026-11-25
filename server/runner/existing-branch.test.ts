@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "../../shared/model.ts";
-import { uiStartCheck } from "../api/reads.ts";
+import { startCheck, uiStartCheck } from "../api/reads.ts";
 import { projectCheckout, setup } from "../api/testing.ts";
-import { startTask } from "../api/writes.ts";
+import { startTask, updateTask } from "../api/writes.ts";
 import { type GitRunner, systemGit } from "../sync/git.ts";
 import { ForgeCli } from "../tracker/forge.ts";
 import { type BranchPlan, decideBranch, type ExistingBranch } from "./branch.ts";
@@ -239,5 +240,90 @@ test("Start on a merged branch offers no start on it; a fresh run starts on the 
     assert.equal(started.branch, "feat/login-2");
   } finally {
     s.stop();
+  }
+});
+
+/**
+ * JOBBY-7QK3T: ERG-M09A8 and ERG-GXH0R were set to in_progress by a hub's plan MR, with no run, after a
+ * session outside the dashboard merged their work. A start on such a task meets the branch as one that
+ * never ran does; Mark done is update_task's in_progress → done.
+ */
+async function unheldFx001(s: Awaited<ReturnType<typeof setup>>) {
+  s.f.external("hub", (root) => {
+    const path = join(root, "tasks", "TST-FX001-fix-flaky-login-test.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("status: todo", "status: in_progress"));
+  });
+  await s.sync().sync();
+  assert.deepEqual([s.task("TST-FX001")!.status, s.task("TST-FX001")!.run_id], ["in_progress", undefined]);
+}
+
+test("Start of a task in progress with no run: a merged branch offers Mark done or a fresh run, in the dashboard and through God Mode", async () => {
+  const s = await setup({ profiles: [PROFILE] }, { forge: FORGES.gitlab.forge("down") });
+  try {
+    s.dashboard.projectRoots.set("prj_core", mergedIntoTrunk());
+    await unheldFx001(s);
+    const shown = await uiStartCheck(s.ctx, { task: "TST-FX001", anyway: true });
+    assert.match(shown.error, /its work is merged: it was merged into origin\/main\. Mark «Fix flaky login test» \(TST-FX001\) done if that was its work/);
+    assert.equal(shown.existing?.merged, true);
+    const godMode = await startCheck(s.ctx, { task: "TST-FX001" });
+    assert.equal(godMode.decision, "refused");
+    assert.match(godMode.error, /its work is merged/);
+    const refused = await startTask(s.ctx, { task: "TST-FX001", profile: "Review" });
+    assert.match(refused.error, /its work is merged/);
+    assert.deepEqual([s.task("TST-FX001")!.status, s.task("TST-FX001")!.run_id], ["in_progress", undefined], "nothing claimed");
+
+    const started = await startTask(s.ctx, { task: "TST-FX001", profile: "Review" }, { branch: "fresh" });
+    assert.equal(started.ok, true, started.error);
+    assert.equal(started.branch, "feat/login-2");
+    const run = s.dashboard.runs!.byTask("TST-FX001")!;
+    await settled(() => run.activity !== "launching");
+    assert.equal(run.activity, "working", run.error);
+    assert.deepEqual([s.task("TST-FX001")!.status, s.task("TST-FX001")!.run_id], ["in_progress", run.run_id], "claimed for the new run");
+  } finally {
+    s.stop();
+  }
+});
+
+test("Mark done on a task in progress with no run whose branch is merged: update_task moves it, the same as the dashboard's button", async () => {
+  const s = await setup({ profiles: [PROFILE] }, { forge: FORGES.gitlab.forge("down") });
+  try {
+    s.dashboard.projectRoots.set("prj_core", mergedIntoTrunk());
+    await unheldFx001(s);
+    const done = await updateTask(s.ctx, { task: "TST-FX001", status: "done" });
+    assert.equal(done.ok, true, done.error);
+    assert.equal(s.task("TST-FX001")!.status, "done");
+  } finally {
+    s.stop();
+  }
+});
+
+test("Start of a task in progress with no run on a branch not merged: continue on it, or no branch at all starts as todo does", async () => {
+  const s = await setup({ profiles: [PROFILE] }, { forge: FORGES.github.forge([]) });
+  try {
+    s.dashboard.projectRoots.set("prj_core", unmerged());
+    await unheldFx001(s);
+    const shown = await uiStartCheck(s.ctx, { task: "TST-FX001", anyway: true });
+    assert.match(shown.error, /already exists in core \(on this Mac; on origin\) and belongs to no run/);
+    const chosen = await uiStartCheck(s.ctx, { task: "TST-FX001", profile: "Review", anyway: true, branch: "continue" });
+    assert.equal(chosen.error, "");
+    const godMode = await startCheck(s.ctx, { task: "TST-FX001" });
+    assert.equal(godMode.decision, "refused", "God Mode carries no branch choice");
+    const started = await startTask(s.ctx, { task: "TST-FX001", profile: "Review" }, { branch: "continue", shown: { project: chosen.project, branch: chosen.branch, workspace: chosen.workspace, profile: chosen.profile, issue: chosen.issue } });
+    assert.equal(started.ok, true, started.error);
+    assert.equal(started.branch, "feat/login");
+  } finally {
+    s.stop();
+  }
+  const clean = await setup({ profiles: [PROFILE] }, { forge: FORGES.github.forge([]) });
+  try {
+    await unheldFx001(clean);
+    const godMode = await startCheck(clean.ctx, { task: "TST-FX001" });
+    assert.equal(godMode.decision, "can_start", godMode.error);
+    assert.match(godMode.next, /in_progress with no live run \(set outside the dashboard\); a start claims it for a new run/);
+    const started = await startTask(clean.ctx, { task: "TST-FX001", profile: "Review" });
+    assert.equal(started.ok, true, started.error);
+    assert.equal(started.branch, "feat/login");
+  } finally {
+    clean.stop();
   }
 });

@@ -41,10 +41,20 @@ export const spacesAddRpc = defineRpc({
   output: z.object({ ok: z.boolean(), key: z.string(), error: z.string() }),
 });
 
+/**
+ * Fetches the plan of one space, or of every space, now, outside the fetch loop (05-architecture.md,
+ * Fetching): "Sync" on the board, in Command Center and in Settings. Answers each space's last good
+ * fetch and its problem, if any; a sync still going on when the answer is due goes on in the background.
+ */
 export const spacesSyncRpc = defineRpc({
   name: "spaces.sync",
   input: z.object({ space: z.string().optional() }),
-  output: z.object({ ok: z.boolean(), error: z.string() }),
+  output: z.object({
+    ok: z.boolean(),
+    /** Every space's problem, "LAC: the plan repo did not answer in time"; or that the sync goes on in the background. */
+    error: z.string(),
+    spaces: z.array(z.object({ key: z.string(), name: z.string(), last_sync: z.string(), error: z.string() })),
+  }),
 });
 
 /**

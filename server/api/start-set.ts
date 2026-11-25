@@ -131,7 +131,19 @@ function planOut(ctx: ReadContext, members: Member[], error = ""): StartPlanOut 
   const later = members.filter((m) => m.verdict.decision === "after_prerequisites");
   const rest = members.filter((m) => !STARTS.has(m.verdict.decision));
   const starting = [...now, ...later];
-  const agents = [...new Set(starting.flatMap((m) => (m.start ? [`${m.start.facts.profile} in ${m.start.facts.mode}`] : [])))];
+  // One line of at most SHOWN_MAX: each agent and its mode first (a mode that waits for the user says so),
+  // then only the model and effort ids, as the policy's reason differs per task and would not fit.
+  const groups = new Map<string, Set<string>>();
+  for (const m of starting) {
+    if (!m.start) continue;
+    const { settings, facts } = m.start;
+    const effortAt = facts.mode.lastIndexOf(`; effort ${settings.effort}`);
+    const key = `${settings.label} in ${effortAt >= 0 ? facts.mode.slice(0, effortAt) : facts.mode}`;
+    const set = groups.get(key) ?? new Set<string>();
+    set.add([settings.modelId, settings.thinkingOptionId].filter(Boolean).join(" "));
+    groups.set(key, set);
+  }
+  const agents = [...groups].map(([key, models]) => `${key}; ${[...models].filter(Boolean).join(", ") || "the provider's own model"}`);
   const unseen = starting.filter((m) => m.start && m.start.instructions.some((part) => part.state !== "unchanged"));
   const instructions = !starting.length
     ? "none"

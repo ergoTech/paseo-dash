@@ -1,10 +1,12 @@
 import type { NEW_START_STATES } from "../shared/api.ts";
 import type { Task } from "../shared/model.ts";
+import type { LoadedEntity } from "./plan/load.ts";
 import type { SpaceEntry } from "./api/resolve.ts";
 import { instructionsParts } from "./api/reads.ts";
 import { humanWork, taskSection } from "./api/view.ts";
 import type { WriteContext } from "./api/writes.ts";
 import { startWithoutAsking } from "./godmode-settings.ts";
+import { pickForTask, taskSignals } from "./runner/model-policy.ts";
 import { hashText, taskInstructions, taskPartKey } from "./runner/seen.ts";
 
 /**
@@ -114,7 +116,7 @@ export async function startNew(ctx: WriteContext, space: SpaceEntry, id: string,
   }
   autopilot.queue(key, [{ task: id, accepted }]);
   void autopilot.pass(ctx, true).catch(() => undefined);
-  return { start: "queued", note: await queuedNote(ctx, space, task) };
+  return { start: "queued", note: await queuedNote(ctx, space, task, loaded!) };
 }
 
 /** Why a new todo task is not given to the autopilot; "" when nothing holds it back. */
@@ -132,7 +134,7 @@ function waitReason(space: SpaceEntry, task: Task, brief: string): string {
 }
 
 /** What the queued flag will start with and what it waits for now, as Live shows it. */
-async function queuedNote(ctx: WriteContext, space: SpaceEntry, task: Task): Promise<string> {
+async function queuedNote(ctx: WriteContext, space: SpaceEntry, task: Task, loaded: LoadedEntity): Promise<string> {
   const read = ctx.dashboard.autopilot!.read();
   const slots = read.running >= read.max_running ? `; all ${read.max_running} slots are in use, so it waits in the queue and starts once one is free` : "";
   const paseo = ctx.dashboard.paseo;
@@ -144,9 +146,11 @@ async function queuedNote(ctx: WriteContext, space: SpaceEntry, task: Task): Pro
           space: space.sync.plan.space?.defaults.agent_profile,
           mode: { space: space.sync.plan.space?.defaults.mode, mac: { id: macStart.mode, provider: macStart.mode_provider } },
           macEffort: macStart.effort,
+          // As every start picks (server/api/reads.ts planStart): the note says what the start will use.
+          policy: macStart.auto_model ? pickForTask(taskSignals(task, loaded)) : undefined,
         })
         .catch(() => undefined)
     : undefined;
-  const settings = choice?.ok ? ` in ${choice.settings.mode}, effort ${choice.settings.effort}` : "";
+  const settings = choice?.ok ? ` on ${choice.settings.modelId} in ${choice.settings.mode}, effort ${choice.settings.effort}` : "";
   return `queued on this Mac's autopilot: it starts once${settings}${slots}`;
 }

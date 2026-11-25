@@ -9,9 +9,9 @@ import { spaceOfId } from "../shared/across.ts";
 import { tasksUpdateRpc } from "../shared/api.ts";
 import { type BoardColumn, type BoardMove, boardMove, RANKED_COLUMNS, uiBoardRpc } from "../shared/board.ts";
 import { overlapText } from "../shared/live.ts";
-import { tasksRankRpc } from "../shared/ui.ts";
-import { StatusDialog } from "./actions.tsx";
-import { Button, isWebUrl, LabelChips, Mark, REFRESH_MS, SpaceTag, type Styles } from "./common.tsx";
+import { tasksArchiveRpc, tasksRankRpc } from "../shared/ui.ts";
+import { ArchiveTasksDialog, StatusDialog } from "./actions.tsx";
+import { Button, Chip, isWebUrl, LabelChips, Mark, REFRESH_MS, SpaceTag, type Styles } from "./common.tsx";
 import { TaskFormFor, useRefresh } from "./forms.tsx";
 import { SpaceFilter, TaskFilters, useOptionsOf, useSpaceOptions, withColors } from "./labels.tsx";
 import { LiveLine } from "./live.tsx";
@@ -25,7 +25,9 @@ import { draggable, dropTarget, onPageKey, onView } from "./web.ts";
  * within its column; everywhere its buttons do the same. n opens a new task, f the filters; / is the
  * top bar's search (client/topbar.tsx). Running, review and done cards only open the task: their
  * moves belong to the run. A card whose work was merged outside the dashboard says so, links the
- * PR/MR and offers "Mark done"; the status changes only when the person confirms.
+ * PR/MR and offers "Mark done"; the status changes only when the person confirms. A finished card is
+ * archived off the board, one by one or all at once; the Archived filter lists them, with Unarchive
+ * (03-model.md, Archive).
  */
 
 type Theme = PluginScreenProps["theme"];
@@ -68,6 +70,9 @@ export function BoardTab({ space, spaces, theme, styles, compact, onNew, query, 
   const [accepting, setAccepting] = useState<string | undefined>();
   const [over, setOver] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [archived, setArchived] = useState(false);
+  const [archivingAll, setArchivingAll] = useState(false);
+  const archive = useRpc(tasksArchiveRpc);
   useEffect(() => {
     const timer = setTimeout(() => setWords(query.trim()), 300);
     return () => clearTimeout(timer);
@@ -77,8 +82,8 @@ export function BoardTab({ space, spaces, theme, styles, compact, onNew, query, 
   const every = useOptionsOf(keys).of;
   const paletteOf = (id: string) => (space ? own : every.get(spaceOfId(id))?.labels);
   const board = useQuery({
-    queryKey: ["dashboard", "board", asked, mine, label, words],
-    queryFn: () => read({ space: asked || undefined, mine: mine || undefined, label: label || undefined, query: words || undefined }),
+    queryKey: ["dashboard", "board", asked, mine, label, words, archived],
+    queryFn: () => read({ space: asked || undefined, mine: mine || undefined, label: label || undefined, query: words || undefined, archived: archived || undefined }),
     refetchInterval: REFRESH_MS,
   });
   const columns = board.data?.columns ?? [];
@@ -122,6 +127,21 @@ export function BoardTab({ space, spaces, theme, styles, compact, onNew, query, 
       refresh();
     }
   };
+  /** Archive or Unarchive on one card: reversible, so it asks nothing. */
+  const archiveCard = async (card: Card, to: boolean) => {
+    setBusy(true);
+    try {
+      const answer = await archive({ archived: to, tasks: [card.id] });
+      if (!answer.ok) toast.error(answer.error);
+      else toast.show(to ? `${card.id} archived: the Archived filter lists it` : `${card.id} is back on the board`, { variant: "success" });
+    } catch (failure) {
+      toast.error(`Unknown whether it changed: ${String((failure as Error)?.message ?? failure)}`);
+    } finally {
+      setBusy(false);
+      refresh();
+    }
+  };
+  const doneTotal = columns.find((c) => c.column === "done")?.total ?? 0;
   const find = (id: string) => columns.flatMap((c) => c.tasks).find((t) => t.id === id);
   const drop = (id: string, column: BoardColumn, target?: Card, after?: boolean) => {
     setOver(undefined);
@@ -143,7 +163,15 @@ export function BoardTab({ space, spaces, theme, styles, compact, onNew, query, 
             style={[styles.text, { flex: 1, minWidth: 180, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, padding: 8 }]}
           />
           <Button label={filtering ? "Hide filters" : compact ? "Filters" : "Filters ( f )"} ghost onPress={() => setFiltering(!filtering)} styles={styles} />
+          <Chip
+            label={archived ? "✓ Archived" : "Archived"}
+            active={archived}
+            accessibilityLabel={archived ? "Show the board" : "Show only the archived tasks"}
+            onPress={() => setArchived(!archived)}
+            styles={styles}
+          />
         </View>
+        {archived ? <Text style={styles.muted}>Archived tasks only: done and canceled tasks taken off the board. Unarchive puts one back.</Text> : null}
         {filtering ? (
           <>
             {spaces ? <SpaceFilter spaces={spaces} value={only} onChange={setOnly} styles={styles} /> : null}
@@ -157,33 +185,54 @@ export function BoardTab({ space, spaces, theme, styles, compact, onNew, query, 
       </View>
       {/* A horizontal scroller clips what is taller than it, so each column fills its height and scrolls its own cards. */}
       <ScrollView horizontal style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: compact ? 12 : 20, paddingBottom: 16, gap: 12 }}>
-        {columns.map((c) => (
-          <Column
-            key={c.column}
-            column={c.column}
-            total={c.total}
-            tasks={c.tasks}
-            over={over === c.column}
-            onOver={() => setOver(c.column)}
-            onDrop={drop}
-            onDragEnd={() => setOver(undefined)}
-            act={act}
-            busy={busy}
-            narrowed={narrowed}
-            spaces={Boolean(spaces)}
-            paletteOf={paletteOf}
-            theme={theme}
-            styles={styles}
-          />
-        ))}
+        {columns
+          .filter((c) => !archived || c.column === "done")
+          .map((c) => (
+            <Column
+              key={c.column}
+              column={c.column}
+              archived={archived}
+              onArchiveAll={!archived && !narrowed && c.column === "done" && c.total > 0 ? () => setArchivingAll(true) : undefined}
+              onArchive={archiveCard}
+              total={c.total}
+              tasks={c.tasks}
+              over={over === c.column}
+              onOver={() => setOver(c.column)}
+              onDrop={drop}
+              onDragEnd={() => setOver(undefined)}
+              act={act}
+              busy={busy}
+              narrowed={narrowed}
+              spaces={Boolean(spaces)}
+              paletteOf={paletteOf}
+              theme={theme}
+              styles={styles}
+            />
+          ))}
       </ScrollView>
       {accepting ? <TaskFormFor task={accepting} accept onClose={() => setAccepting(undefined)} styles={styles} theme={theme} /> : null}
+      {archivingAll ? (
+        <ArchiveTasksDialog
+          finishedOf={asked ? { space: asked } : {}}
+          title={asked ? `Every finished task of ${asked}` : "Every finished task of every space"}
+          note={`The ${doneTotal} done task${doneTotal === 1 ? "" : "s"} of the board's Done column, and the canceled ones (which have no column), are archived.`}
+          archived
+          open
+          onClose={() => setArchivingAll(false)}
+          styles={styles}
+        />
+      ) : null}
     </View>
   );
 }
 
-function Column({ column, total, tasks, over, onOver, onDrop, onDragEnd, act, busy, narrowed, spaces, paletteOf, theme, styles }: {
+function Column({ column, archived, onArchiveAll, onArchive, total, tasks, over, onOver, onDrop, onDragEnd, act, busy, narrowed, spaces, paletteOf, theme, styles }: {
   column: BoardColumn;
+  /** The board shows only archived tasks, all in this one column. */
+  archived: boolean;
+  /** "Archive all…" in the column's header: the done column of a board not narrowed by filters. */
+  onArchiveAll?: () => void;
+  onArchive: (card: Card, archived: boolean) => Promise<void>;
   total: number;
   tasks: Card[];
   over: boolean;
@@ -214,7 +263,10 @@ function Column({ column, total, tasks, over, onOver, onDrop, onDragEnd, act, bu
       accessibilityLabel={`${COLUMN_TITLE[column]}, ${total}`}
       style={[styles.card, { width: COLUMN_WIDTH, gap: 8, backgroundColor: theme.colors.surface0 }, over ? { borderColor: theme.colors.accent } : null]}
     >
-      <Text accessibilityRole="header" style={styles.heading}>{`${COLUMN_TITLE[column]} · ${total}`}</Text>
+      <View style={[styles.row, { justifyContent: "space-between", flexWrap: "wrap" }]}>
+        <Text accessibilityRole="header" style={styles.heading}>{`${archived ? "Archived" : COLUMN_TITLE[column]} · ${total}`}</Text>
+        {onArchiveAll ? <Button label="Archive all…" accessibilityLabel="Archive every done and canceled task" ghost disabled={busy} onPress={onArchiveAll} styles={styles} /> : null}
+      </View>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
         {tasks.length === 0 ? <Text style={styles.muted}>Nothing here.</Text> : null}
         {tasks.map((t) => (
@@ -227,6 +279,7 @@ function Column({ column, total, tasks, over, onOver, onDrop, onDragEnd, act, bu
             onDrop={(id, after) => latest.current(id, column, t, after)}
             onDragEnd={onDragEnd}
             act={act}
+            onArchive={onArchive}
             busy={busy}
             narrowed={narrowed}
             space={spaces ? spaceOfId(t.id) : undefined}
@@ -236,7 +289,7 @@ function Column({ column, total, tasks, over, onOver, onDrop, onDragEnd, act, bu
           />
         ))}
         {left > 0 ? (
-          <Text style={styles.muted}>{column === "done" ? `${left} older finished tasks: the Tasks tab lists them.` : `${left} more: the Tasks tab lists them.`}</Text>
+          <Text style={styles.muted}>{column === "done" ? `${left} older ${archived ? "archived" : "finished"} tasks: the Tasks tab lists them.` : `${left} more: the Tasks tab lists them.`}</Text>
         ) : null}
       </ScrollView>
     </View>
@@ -250,8 +303,9 @@ function mergedNote(card: Card): string {
   return `${draft} without a run: its work is merged already (${prs}). Nothing else changes.`;
 }
 
-function BoardCard({ card, column, active, onOpen, onDrop, onDragEnd, act, busy, narrowed, space, palette, theme, styles }: {
+function BoardCard({ card, column, active, onOpen, onDrop, onDragEnd, act, onArchive, busy, narrowed, space, palette, theme, styles }: {
   card: Card;
+  onArchive: (card: Card, archived: boolean) => Promise<void>;
   column: BoardColumn;
   active: boolean;
   onOpen: () => void;
@@ -302,6 +356,11 @@ function BoardCard({ card, column, active, onOpen, onDrop, onDragEnd, act, busy,
         {card.blocked_by ? (
           <Text style={styles.muted} numberOfLines={2}>{`⊘ waits for ${card.blocked_by}`}</Text>
         ) : null}
+        {card.unheld ? (
+          <Text style={styles.muted} numberOfLines={2}>
+            No run holds it: open it to mark it done, put it back to todo, cancel or start it.
+          </Text>
+        ) : null}
         {card.quote && card.matched_in && card.matched_in !== "title" && card.matched_in !== "id" ? (
           <Text style={[styles.muted, { fontStyle: "italic" }]} numberOfLines={2}>{`${card.matched_in.replace("_", " ")}: «${card.quote}»`}</Text>
         ) : null}
@@ -340,6 +399,18 @@ function BoardCard({ card, column, active, onOpen, onDrop, onDragEnd, act, busy,
           onClose={() => setMarking(false)}
           styles={styles}
         />
+      ) : null}
+      {card.status === "done" || card.status === "canceled" ? (
+        <View style={styles.row}>
+          <Button
+            label={card.archived ? "Unarchive" : "Archive"}
+            accessibilityLabel={card.archived ? `Put ${card.title} back on the board` : `Archive ${card.title}: take it off the board`}
+            ghost
+            disabled={busy}
+            onPress={() => void onArchive(card, !card.archived)}
+            styles={styles}
+          />
+        </View>
       ) : null}
       {ranked ? (
         <View style={[styles.row, { flexWrap: "wrap", gap: 4 }]}>

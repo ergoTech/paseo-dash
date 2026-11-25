@@ -2,8 +2,43 @@
 
 ## Unreleased
 
+### Board
+
+- A task in progress that no run of Paseo Dash holds (set by a session outside the dashboard, a hub's
+  plan MR or an edit of the plan) is no longer stuck: its screen says so and offers Mark done, Back to
+  todo, Cancel and Start, and its board card says no run holds it. Nothing changes it by itself.
+  Start claims it for a new run with the same branch check as a todo task: a merged branch offers
+  Mark done or a fresh run with a suffix, a branch not merged offers continuing on it or the suffix.
+  Work merged on its branch or a PR/MR among its links shows "Work already merged" with Mark done, as
+  for todo tasks. ChatGPT's `update_task` moves it to done, todo or canceled, and `start_task` starts
+  it with the same checks; `start_check` says why the start is allowed. The autopilot never starts it.
+  `meta.describe` grows from 17,420 to 17,506 bytes.
+- Sync: the space screen's header has a Sync button that fetches the plan now, outside the
+  one-minute loop, and says when it last synced ("Synced 14:03") or why it failed; Command Center has
+  "Sync Paseo Dash". `spaces.sync` answers each space's last sync and problem.
+- Archive: done and canceled tasks can be archived off the board, one at a time (card or task screen),
+  all of a space (the Done column's "Archive all…") or all of a feature (its screen's "Archive
+  finished…"). The board's Archived chip lists them, each with Unarchive; search and the Tasks tab find
+  them as before. The task keeps its file, status, run, branch and PR/MR; it gets an `archived` field,
+  which a reopen clears. Open tasks cannot be archived.
+
 ### Autopilot
 
+- Claude's model and effort are picked per task, the same way for the start dialog, the autopilot and
+  ChatGPT's starts: Sonnet 5.5 Medium for a short brief with a few acceptance lines, Sonnet 5.5 High
+  for a bigger one, Opus 5.5 High for a task without acceptance, with an open question or more than
+  six acceptance lines, or whose title or labels name architecture, more than one repository, a
+  migration, security, research or a spike, an audit, a rewrite or concurrency. Only where no agent profile applies; a task's or space's profile
+  keeps its model. The start dialog shows the model and why, and offers other models and this Mac's
+  agent profiles; a pick there wins. A model this Mac does not offer leaves the provider's default,
+  said in the dialog. A usage limit never swaps the model. Settings → Autopilot → "Pick Claude's model
+  and effort per task" turns it off. `meta.describe` grows from 17,506 to 17,529 bytes.
+- ChatGPT's `update_task` takes `agent_profile`: the name of one of this Mac's agent profiles, which
+  every start of the task then uses for its model and effort (a profile outranks the model policy;
+  the start dialog's pick still wins). An empty value takes it off, so the policy and the defaults
+  decide again. A name this Mac has no profile for is refused with the profiles it has, and nothing
+  else in the call is changed. `get_task` shows the profile. `meta.describe` grows from 17,529 to
+  17,667 bytes.
 - A task you create in To Do with nothing to wait for starts on its own: once a slot of the autopilot
   is free, it starts once, in Auto mode with effort High. "To Do only" in the new task form keeps it
   there. A task that waits for other tasks, one whose brief lists open questions, and one labeled as a

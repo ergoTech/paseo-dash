@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import {
   ENTITY_DIRS,
   type EntityType,
+  closed,
   hasLiveRun,
   ID_PATTERN,
   lineLocked,
@@ -13,6 +14,7 @@ import {
   RUN_TRANSITIONS,
   type Task,
   type TaskStatus,
+  startable,
 } from "../../shared/model.ts";
 import {
   addClarification,
@@ -81,6 +83,11 @@ export type Operation =
   | { op_id: string; kind: "handoff"; id: string; run_id: string; text: string; at: string }
   | { op_id: string; kind: "release"; id: string; run_id: string; to: "todo" | "canceled" | "done"; at: string }
   /**
+   * Takes a done or canceled task off the board (`archived: true`, writing `archived: <at>`), or puts it
+   * back (03-model.md, Archive). Nothing else of the task changes.
+   */
+  | { op_id: string; kind: "archive"; id: string; archived: boolean; at: string }
+  /**
    * Adds, changes (`expect` is what it was) or, with a null value, removes a project of space.yaml.
    * With `pin`, it writes the default color a line drew, for the operation with that `op_id`: it
    * applies only right after that operation applied, and is dropped, never refused, otherwise.
@@ -132,17 +139,18 @@ export type Outcome =
   | { status: "dropped"; reason: string };
 
 /** Fields that only dedicated operations may write. */
-const PROTECTED_FIELDS = new Set(["id", "type", "status", "created", "labels"]);
+const PROTECTED_FIELDS = new Set(["id", "type", "status", "created", "labels", "archived"]);
 const PROTECTED_PREFIXES = ["run_", "progress_"];
 
 /**
  * Status changes a person may make with `update_task` (03-model.md, the transition table). Anything
- * that starts or ends a run has its own operation.
+ * that starts or ends a run has its own operation. In progress is left this way only with no live run
+ * (`unheld`): a live run is ended by a release, and the `status` operation refuses it.
  */
 export const PERSON_STATUS: Record<TaskStatus, TaskStatus[]> = {
   inbox: ["todo", "canceled"],
   todo: ["inbox", "done", "canceled"],
-  in_progress: [],
+  in_progress: ["todo", "done", "canceled"],
   review: [],
   done: ["todo"],
   canceled: ["todo"],
@@ -305,7 +313,12 @@ function apply(ws: Workspace, plan: Plan, op: Operation, now: string): Outcome {
       if (op.to === "todo" && task.status === "inbox" && !task.project) {
         return { status: "refused", reason: `${op.id} needs a project before it is accepted` };
       }
-      return edit(ws, loaded, now, (document) => setField(document, "status", op.to));
+      return edit(ws, loaded, now, (document) => {
+        setField(document, "status", op.to);
+        // A person's status change leaves a closed task only for an open one (a reopen: back on the board),
+        // and an open task's `archived` is a stale one an edit left: either way it goes (03-model.md, Archive).
+        if (task.archived) setField(document, "archived", undefined);
+      });
     }
 
     case "brief": {
@@ -364,7 +377,8 @@ function apply(ws: Workspace, plan: Plan, op: Operation, now: string): Outcome {
           reason: `already started by ${task.run_by ?? "someone"} on ${task.run_host ?? "another machine"} at ${task.run_started ?? "?"}`,
         };
       }
-      if (task.status !== "todo") return { status: "refused", reason: `${op.id} is ${task.status}, not todo` };
+      // In progress with no live run (unheld) is claimed as todo is: a person started it again.
+      if (!startable(task)) return { status: "refused", reason: `${op.id} is ${task.status}, not todo` };
       return edit(ws, loaded, now, (document) => {
         const links = task.run_pr && !task.links.includes(task.run_pr) ? [...task.links, task.run_pr] : task.links;
         setField(document, "links", links);
@@ -373,6 +387,7 @@ function apply(ws: Workspace, plan: Plan, op: Operation, now: string): Outcome {
         }
         for (const [field, value] of Object.entries(op.run)) setField(document, field, value);
         setField(document, "status", "in_progress");
+        if (task.archived) setField(document, "archived", undefined);
       });
     }
 
@@ -457,6 +472,19 @@ function apply(ws: Workspace, plan: Plan, op: Operation, now: string): Outcome {
         setField(document, "run_ended", op.at);
         setField(document, "status", op.to);
       });
+    }
+
+    case "archive": {
+      const loaded = ws.task(op.id);
+      if (!loaded) return { status: "refused", reason: `${op.id} is not a task` };
+      const task = loaded.entity;
+      if (!op.archived) {
+        if (!task.archived) return { status: "already" };
+        return edit(ws, loaded, now, (document) => setField(document, "archived", undefined));
+      }
+      if (!closed(task)) return { status: "refused", reason: `${op.id} is ${task.status}; only a done or canceled task is archived` };
+      if (task.archived) return { status: "already" };
+      return edit(ws, loaded, now, (document) => setField(document, "archived", op.at));
     }
 
     case "label": {

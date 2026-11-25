@@ -129,13 +129,14 @@ Every write is recorded as an operation before it touches a file. Each operation
 | `set` | entity, field, value, `expect` (the value the writer saw) | the field still equals `expect`; a task's `project` only while the task has no `run_id` (D19) | the field already equals `value` |
 | `brief` | entity, new text, `expect` hash of the old text | the brief still hashes to `expect` | the brief already equals the new text |
 | `check` | entity, acceptance line text, done, optional `run_id` | a line with that text exists (and, with a `run_id`, that run is the live run) | the line already has that state |
-| `claim` | task, new `run_id`, `run_by`, `run_host`, `run_branch`, `run_started`; replaces every `run_*` field and moves the previous `run_pr` into `links` | status is `todo` and the task has no live run | the task's `run_id` is this `run_id` |
+| `claim` | task, new `run_id`, `run_by`, `run_host`, `run_branch`, `run_started`; replaces every `run_*` field and moves the previous `run_pr` into `links` | status is `todo`, or `in_progress` with no live run (unheld, [03-model.md](03-model.md#statuses)), and the task has no live run | the task's `run_id` is this `run_id` |
 | `claim` with `create` (adoption) | as `claim`, plus the new task's `create` (type `task`, status `todo`, no `run_*` or `progress_*` field) | the id is not taken; the task is then created as `todo` and claimed in the same apply, so both land in one commit or neither does | the task exists and its `run_id` is this `run_id` |
 | `progress` | task, `run_id`, done, total, note, at | that run is the task's live run | the same values are already there |
 | `clarify` | task, by, text, at | the task exists; adds an entry to `## Clarifications` ([03-model.md](03-model.md#task)) | the section's last entry is by the same person with the same text, at any time |
 | `handoff` | task, `run_id`, text, at | that run is the task's live run; replaces `## Handoff` ([03-model.md](03-model.md#task)) | that run's handoff already has this text |
 | `transition` | task, allowed `from` statuses, `to`, `run_id` (run-scoped transitions) | status is one of `from` and that run is the live run (the transition table in [03-model.md](03-model.md#statuses)); for `to: done`, every acceptance line is ticked | status is already `to` |
 | `release` | task, `run_id` of the run being released, to | that run is still the live run | that run already has `run_ended` |
+| `archive` | task, archived (yes or no), at | archiving: the task is `done` or `canceled`; writes `archived: <at>` ([03-model.md](03-model.md#archive)). Putting back: always; removes the field | the field is already there (archive) or absent (put back) |
 | `label` | task, one label, add or remove | the task exists (an added label must be a usable name or one the palette spells) | the label is already there (add) or absent (remove), in any case |
 | `label_def` | label name, its color and description or null, `expect`, optional `if_absent` | `space.yaml`'s definition still equals `expect`; a removal also needs no task to carry the label | the definition already equals the new one; with `if_absent` (a label someone typed), any definition |
 | `person` | person key, name, emails, GitHub login, GitLab logins per host, or null; `expect` | the entry still equals `expect`; a removal also needs no open task assigned to the person | the entry already equals the new one |
@@ -312,6 +313,17 @@ sequenceDiagram
 
 - A fetch loop per space (default every 60 seconds, configurable), plus a fetch before every claim and
   when a dashboard screen gains focus.
+- **Sync** fetches now, outside the loop (added 2026-11-24): a person who pushed a task into the plan
+  should not wait up to a minute without knowing when it shows. The space screen's header (every tab,
+  the board included) has a Sync button for the space on view (every space on the all-spaces view),
+  Command Center has "Sync Paseo Dash" (it opens the space screen, which syncs), and Settings keeps
+  "Sync now" per space. Each asks `spaces.sync`, which runs one pass of the space's own queue (fetch,
+  reload, re-apply and push what is pending) and is never skipped the way an overlapping loop tick is.
+  The answer names each space's last good fetch and its problem: a fetch that failed (the remote's
+  last line of `git fetch`, or that it did not answer in time), a push that failed, or a pass that
+  could not update the plan. The header says "Synced 14:03" (the oldest of the spaces on view), and
+  the problem in red until a later sync clears it; a sync still going on after Paseo's answer time
+  goes on in the background, and the next read shows its result.
 - After a fetch with new commits: read their `Dashboard-Op:` trailers (I1), reload the changed files
   into the index, recompute the instructions facts ([Security](#security)); pending operations are
   re-applied as in step 4.
@@ -610,9 +622,29 @@ new attempt. So (I6):
   `mode` says the effort after the mode, as God Mode shows at most 8 fields. The run keeps the mode
   and effort it passed (`runs.json` `asked`), the tracker keeps what Paseo reports of the agent
   (`currentModeId`, `effectiveThinkingOptionId`), and the task screen's Run section shows both where
-  they differ. The model stays
-  the profile's or the provider's default: the dashboard does not manage it. The plugin passes nothing about accounts: account plugins (such as claude-accounts)
-  keep working through their own hooks.
+  they differ. The model (JOBBY-1555K) is, in order: the one a person picked in the confirmation (one
+  of the provider's models from `providers.listModels`; another id is refused), the profile's, then,
+  only where no profile applies and this Mac's provider is `claude`, the one the task's policy picks
+  (`server/runner/model-policy.ts`), then the provider's default model. The policy reads only what every
+  task already has (title, brief, acceptance, labels), so old tasks get a pick without a new field:
+  Sonnet 5.5 with effort `medium` for a brief of at most 1000 characters with at most three acceptance
+  lines, Sonnet 5.5 `high` for up to six lines or a longer brief, Opus 5.5 `high` for no acceptance, an
+  open question in the brief, more than six lines, or a title or label naming uncertain or risky work
+  (architecture, more than one repository, migration, security, research or a spike, audit, rewrite,
+  concurrency). Risk words in the brief do not count: briefs cite their sources (a research, an
+  architecture doc, "no migrations"), and code spans, paths and negated words are skipped. Its effort goes below a
+  picked one and the profile's and above this Mac's default. A policy model Paseo does not list here
+  leaves the provider's default model and the efforts below the policy, and the model text says so.
+  The confirmation shows the model with why it was picked and offers chips for the policy's models,
+  the provider's default and this Mac's agent profiles; a pick asks the daemon again (efforts are the
+  model's own) and the start sends only the profile and model picked, so its `profile` fact (which
+  now ends with `; model …` for God Mode's read-back) must match the one shown. Settings → Autopilot
+  turns the policy off (`start.auto_model`, on when absent). Paseo's usage report names windows by
+  free text, not by model, so a used-up limit never swaps the model: the autopilot's hold applies
+  (Autopilot, usage limits). The run keeps the model id it passed (`asked.modelId`). The policy picks
+  the task agent's model only: an independent review the agent runs (a subagent, a review gate of the
+  repository) keeps its own profile. The plugin passes nothing about accounts: account plugins (such
+  as claude-accounts) keep working through their own hooks.
 - **Prompt.** The space's `templates/start-prompt.md` when present, else the built-in template: the
   task id and title, the space, project, feature and milestone, the branch and base, the brief, the
   acceptance checklist, the task's clarifications (a `## Clarifications` section that tells the agent

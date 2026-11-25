@@ -91,6 +91,15 @@ export function registerSurfaces(client: PluginClientContext): () => void {
       context: "global",
       onSelect: (context) => context.openScreen({ screenId: "space", params: { search: String(Date.now()) } }),
     }),
+    // Fetches every plan now, outside the 60-second loop; the space screen says when and what failed (client/sync.tsx).
+    client.addCommandCenterItem({
+      id: "sync",
+      title: `Sync ${PLUGIN_NAME}`,
+      icon: "RefreshCw",
+      keywords: ["sync", "fetch", "pull", "plan", "refresh", "paseo dash", "pd", "dashboard"],
+      context: "global",
+      onSelect: (context) => context.openScreen({ screenId: "space", params: { sync: String(Date.now()) } }),
+    }),
     client.addCommandCenterItem({
       id: "open-dashboard",
       title: `Open ${PLUGIN_NAME}`,

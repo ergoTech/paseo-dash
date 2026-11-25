@@ -173,6 +173,8 @@ export const tasksGetRpc = defineRpc({
     issue: z.string(),
     /** What this machine last read of it: open, closed, closed by <PR/MR>, unknown; empty without an issue. */
     issue_state: z.string(),
+    /** The agent profile the task names (its model and effort), or empty: the policy and the defaults decide. */
+    agent_profile: z.string(),
     branch: z.string(),
     held_by: z.string(),
     host: z.string(),
@@ -300,7 +302,7 @@ export const startCheckRpc = defineRpc({
     error: z.string(),
     /** One of START_DECISIONS: what a start of this task does now, as start_plan says it. */
     decision: z.string(),
-    /** What the user or ChatGPT does next about it; "" when it can start. */
+    /** What the user or ChatGPT does next about it; "" when it can start (an unheld task: why a start claims it again). */
     next: z.string(),
     /** The tasks it waits for that are not done: "LAC-5RT2M «TOTP contract» (in_progress)"; "" when none. */
     waits_for: z.string(),
@@ -536,6 +538,7 @@ export const tasksUpdateInput = z.object({
   remove_labels: labels(),
   depends_on: z.array(z.string().trim().min(1)).max(20).optional().describe("Replaces the list"),
   issue: issue("Issue URL; empty takes it off"),
+  agent_profile: z.string().trim().max(80).optional().describe("Agent profile name on this Mac; its model and effort start the task; empty takes it off"),
   duplicate_of: optionalName("With status canceled: merge into that task"),
   status: z
     .enum(["todo", "inbox", "done", "canceled"])
