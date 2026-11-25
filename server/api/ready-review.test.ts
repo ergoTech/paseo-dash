@@ -401,3 +401,36 @@ test("a list cut short of a card's age and an old reading are said; boilerplate 
     s.stop();
   }
 });
+
+test("a branch naming another card outweighs a title mention; one PR written two ways is one", async () => {
+  const s = await plan(
+    (root) => {
+      write(root, "TST-EE001", "Storage layer", { status: "done" });
+      write(root, "TST-EE002", "Search facets", { lines: ["x ticked"] });
+      write(root, "TST-EE003", "Owner of the linked change", { status: "done", front: "links: ['https://github.com/acme/core/pull/32/files']\n" });
+      write(root, "TST-EE004", "Only cites that change", { front: "links: [https://github.com/acme/core/pull/32]\n", lines: ["x ticked"] });
+      write(root, "TST-EE005", "Hand-made branch owner", { status: "done", front: "branch: feat/ledger\n" });
+      write(root, "TST-EE006", "Cites the ledger change", { front: "links: [https://github.com/acme/core/pull/33]\n", lines: ["x ticked"] });
+      write(root, "TST-EE007", "Reviewed but failed", { status: "review", front: "delivery: { qa: failed }\n" });
+    },
+    [
+      pr(31, "feat: storage layer, unblocks TST-EE002", { head: "task/tst-ee001-storage-layer" }),
+      pr(32, "chore: tidy"),
+      pr(33, "feat: ledger", { head: "feat/ledger" }),
+    ],
+  );
+  try {
+    for (const id of ["TST-EE004", "TST-EE006"]) await s.review({ task: id });
+    for (const id of ["TST-EE002", "TST-EE004", "TST-EE006"]) {
+      const card = await s.card(id);
+      assert.equal(card.coverage, "partial", `${id}: only its own tick covers it`);
+      assert.match(card.prs[0]!.tie, /a signal, not proof/, id);
+    }
+    assert.match((await s.card("TST-EE004")).prs[0]!.tie, /TST-EE003 links it too/);
+    assert.match((await s.card("TST-EE006")).prs[0]!.tie, /its branch is shared with TST-EE005/);
+    const failed = (await s.review({ task: "TST-EE007" })).tasks[0]!;
+    assert.match(failed.next, /^QA failed: the user sends the work back.*do not accept it$/);
+  } finally {
+    s.stop();
+  }
+});

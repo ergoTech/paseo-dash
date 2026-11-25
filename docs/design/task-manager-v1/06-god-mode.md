@@ -1062,10 +1062,10 @@ or at one card (`task`, which also asks that card's forge now). It puts together
 | `none` | nothing found; `incomplete` says what was not read |
 
 - A PR/MR is the card's own when its run reported it, its branch names the card or it closed the
-  card's issue; when its title names the card and no other card's run reported it; or, tied only by a
-  link or the branch, when no other run reported it, it names no other card, and no other card links it
-  (for a link) or shares the branch, canceled cards included (for a branch). A mention in a description
-  is a signal.
+  card's issue; when its title names the card, no other card's run reported it and its branch names no
+  other card; or, tied only by a link or the branch, when no other run reported it, it names no other
+  card, no other card (canceled ones included) is on its branch, and, for a link, no other card links
+  it. A mention in a description is a signal.
 - Related cards are of the same project and not before or after the card in a dependency chain: a
   shared branch, an alike title, two open lines worded like ticked ones, or, for work that exists, a
   shared label and title word on top of a card both build on, or a mention with a matching line. A

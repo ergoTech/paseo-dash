@@ -144,6 +144,11 @@ export class MergedTracker {
   private readonly inFlight = new Map<string, Promise<void>>();
   /** When each task was last asked for, answered or not: a task screen does not ask again before FRESH_MS. */
   private readonly asked = new Map<string, number>();
+  /**
+   * The readings for which the forge's search for the task's id answered. Kept apart from the
+   * reading: screens follow its content (server/changes.ts), and this changes nothing they show.
+   */
+  private readonly searched = new WeakSet<MergedView>();
   /** Each project's latest merges as the last pass read them, by `<space>:<project>`; absent when the forge did not answer. */
   private readonly recent = new Map<string, { at: number; prs: ForgePr[]; cut: boolean }>();
 
@@ -271,7 +276,9 @@ export class MergedTracker {
     const merged = mergedAfter(found, task.created!, task.id);
     // A forge that did not answer leaves the last reading; a merge it did name is shown at once.
     if (!merged.length && unanswered) return;
-    this.seen.set(task.id, { key: wanted.key, at: this.now().toISOString(), merged });
+    const view = { key: wanted.key, at: this.now().toISOString(), merged };
+    if (search && searched !== undefined) this.searched.add(view);
+    this.seen.set(task.id, view);
   }
 
   /**
@@ -288,6 +295,11 @@ export class MergedTracker {
     return view && view.key === wanted.key ? view.merged : [];
   }
 
+  /** Whether this reading searched the forge beyond the project's latest merges, and was answered. */
+  wasSearched(view: MergedView): boolean {
+    return this.searched.has(view);
+  }
+
   /** This machine's reading of a task as it is now, its time included; undefined when it has none. */
   readingOf(plan: Plan, task: Task): MergedView | undefined {
     const view = this.seen.get(task.id);
@@ -301,7 +313,8 @@ export class MergedTracker {
   listing(space: string, project: string): { at: string; since?: string } | undefined {
     const list = this.recent.get(`${space}:${project}`);
     if (!list) return undefined;
-    const since = list.cut ? list.prs.map((pr) => pr.mergedAt ?? "").filter(Boolean).sort()[0] : undefined;
+    // Cut short with none of the project's own among them: nothing before the reading was compared.
+    const since = list.cut ? (list.prs.map((pr) => pr.mergedAt ?? "").filter(Boolean).sort()[0] ?? new Date(list.at).toISOString()) : undefined;
     return { at: new Date(list.at).toISOString(), ...(since ? { since } : {}) };
   }
 

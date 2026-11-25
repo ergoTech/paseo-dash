@@ -13,6 +13,7 @@ import { closed, hasLiveRun, refId, type Task, unheld } from "../../shared/model
 import { prLabel } from "../delivery.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import type { MatchedBy, MergedPr } from "../tracker/merged.ts";
+import { prKey } from "../tracker/forge.ts";
 import { mergedCandidates, namedIds } from "../tracker/merged.ts";
 import { classify } from "./candidates.ts";
 import { ancestorsOf, chainsOf, type Root } from "./chains.ts";
@@ -78,7 +79,7 @@ interface SpaceFacts {
   plan: Plan;
   byProject: Map<string, Compared[]>;
   byId: Map<string, Compared>;
-  /** PR/MR URL → the tasks whose run reported it, and those that link it. */
+  /** PR/MR (by prKey) → the tasks whose run reported it, and those that link it. */
   claims: Map<string, string[]>;
   links: Map<string, string[]>;
   /** Project and branch → every task that plans or ran on it, canceled ones too. */
@@ -112,8 +113,8 @@ function spaceFacts(space: SpaceEntry): SpaceFacts {
   }
   const boilerplate = new Set([...lines].filter(([, ids]) => ids.length > BOILERPLATE_CARDS).map(([key]) => key));
   for (const { task, loaded } of all) {
-    if (task.run_pr) add(claims, task.run_pr, task.id);
-    for (const link of new Set(task.links.map((link) => link.trim()))) add(links, link, task.id);
+    if (task.run_pr) add(claims, prKey(task.run_pr), task.id);
+    for (const link of new Set(task.links.map(prKey))) add(links, link, task.id);
     if (!task.project) continue;
     const branch = task.run_branch ?? plannedBranch(plan, task);
     add(branches, inProject(task.project, branch), task.id);
@@ -161,9 +162,9 @@ function recordedState(ctx: ReadContext, facts: SpaceFacts, task: Task, url: str
 /**
  * The card's PR/MRs: the merged ones found for it, and the one a run of it reported. A found one is
  * the card's own when its run reported it, its branch names the card or it closed the card's issue;
- * when its title names the card and no other card's run reported it; or, tied only by a link or the
- * branch, when nothing gives it to another card: no other run reported it, it names no other card,
- * and no other card links it (for a link) or shares the branch (for a branch).
+ * when its title names the card, no other card's run reported it and its branch names no other card;
+ * or, tied only by a link or the branch, when nothing gives it to another card: no other run reported
+ * it, it names no other card, no other card is on its branch, and, for a link, no other card links it.
  */
 function ownPrs(ctx: ReadContext, facts: SpaceFacts, task: Task): { prs: OwnPr[]; merged: MergedPr[] } {
   const found = ctx.dashboard.merged.shown(facts.plan, task);
@@ -172,30 +173,33 @@ function ownPrs(ctx: ReadContext, facts: SpaceFacts, task: Task): { prs: OwnPr[]
   const prs: OwnPr[] = [];
   const merged: MergedPr[] = [];
   for (const pr of found) {
-    const claimed = others(facts.claims.get(pr.url));
-    const names = others(pr.names).filter((id) => facts.plan.entities.get(id)?.entity.type === "task");
-    const linked = others(facts.links.get(pr.url));
+    const isTask = (id: string) => facts.plan.entities.get(id)?.entity.type === "task";
+    const key = prKey(pr.url);
+    const claimed = others(facts.claims.get(key));
+    const names = others(pr.names).filter(isTask);
+    const branchNames = others(namedIds(pr.branch ?? "")).filter(isTask);
+    const linked = others(facts.links.get(key));
     const sharing = pr.branch ? others(facts.branches.get(inProject(task.project ?? "", pr.branch))) : [];
-    const unclaimed = !claimed.length && !names.length;
+    const unclaimed = !claimed.length && !names.length && !sharing.length;
     const own =
-      pr.url === task.run_pr ||
+      (task.run_pr !== undefined && prKey(task.run_pr) === key) ||
       pr.by.includes("id_in_branch") ||
       pr.by.includes("closes_issue") ||
-      (pr.by.includes("id_in_title") && !claimed.length) ||
+      (pr.by.includes("id_in_title") && !claimed.length && !branchNames.length) ||
       (unclaimed && pr.by.includes("link") && !linked.length) ||
-      (unclaimed && pr.by.includes("branch") && !sharing.length);
+      (unclaimed && pr.by.includes("branch"));
     const ways = pr.by.map((way) => TIE_WORDS[way]).join("; ");
     const doubts = [
       claimed.length ? `it is the PR/MR of ${listed(claimed)}` : "",
       names.length ? `it names ${listed(names)}` : "",
       linked.length && pr.by.includes("link") ? `${listed(linked)} links it too` : "",
-      sharing.length && pr.by.includes("branch") ? `its branch is shared with ${listed(sharing)}` : "",
+      sharing.length ? `its branch is shared with ${listed(sharing)}` : "",
     ];
     prs.push({ pr: pr.label, url: pr.url, state: "merged", tie: own ? ways : [ways, ...doubts, "a signal, not proof"].filter(Boolean).join("; "), own });
     if (own) merged.push(pr);
   }
   const url = task.run_pr;
-  if (url && !prs.some((pr) => pr.url === url)) {
+  if (url && !prs.some((pr) => prKey(pr.url) === prKey(url))) {
     const { state, sha } = recordedState(ctx, facts, task, url);
     prs.push({ pr: prLabel(url), url, state, tie: hasLiveRun(task) ? "its run reported it" : "an earlier run of the card reported it", own: true });
     if (state === "merged") merged.push({ label: prLabel(url), url, merged_at: "", ...(sha ? { sha } : {}), by: [] });
@@ -354,7 +358,11 @@ function nextOf(card: { coverage: Coverage; basis: string; prs: OwnPr[]; merged:
   return undefined;
 }
 
-const REVIEW_NEXT = "the user tests and accepts its work (accept_task) or sends it back (send_back)";
+/** The step of work in review: the owner's, and never an acceptance after a failed QA. */
+const reviewNext = (task: Task) =>
+  task.delivery?.qa === "failed"
+    ? "QA failed: the user sends the work back (send_back) with what failed; do not accept it"
+    : "the user tests and accepts its work (accept_task) or sends it back (send_back)";
 
 /** A card with its place in the review's order. */
 type Ordered = Card & { order: number };
@@ -411,7 +419,7 @@ function review(ctx: ReadContext, facts: SpaceFacts, task: Task, chain: Held, se
   // What also holds the start, when the step above is about coverage and not about that hold.
   if (covered && held && held.group !== "agent" && held.group !== "merged") next = `${next}. Also held: ${cycle ? CYCLE_NEXT : held.reason}`;
   // Work in review or held by a run goes on as it does anywhere: the coverage above gives no other step.
-  if (task.status === "review") next = REVIEW_NEXT;
+  if (task.status === "review") next = reviewNext(task);
   else if (hasLiveRun(task)) next = "a run holds it: follow it (task); start nothing";
 
   return {
@@ -445,7 +453,7 @@ function rootRow(ctx: ReadContext, facts: SpaceFacts, root: Root, card: () => Ca
     return { ...base, title: "(not found)", status: "missing", project: "", next: "no task has this id: fix or remove the reference (update_task depends_on)" };
   }
   let next: string;
-  if (task.status === "review") next = REVIEW_NEXT;
+  if (task.status === "review") next = reviewNext(task);
   else if (hasLiveRun(task)) next = `under way, ${activityText(task, ctx.host, localRun(ctx.dashboard.runs, task)) || "run held"}: follow it (task); the cards wait until it is done`;
   else if (task.status === "inbox") next = "an inbox draft: the user accepts it first (update_task status todo)";
   else next = card().next;
@@ -466,8 +474,10 @@ async function readNow(ctx: ReadContext, space: SpaceEntry, task: Task): Promise
     timer = setTimeout(resolve, TASK_WAIT_MS);
   });
   await Promise.race([tracker.check({ sync: space.sync, mapping: space.record.mapping }, task, { search: true }).catch(() => undefined), late]).finally(() => clearTimeout(timer));
-  const searched = tracker.seen.get(task.id) !== before;
-  return { searched, late: searched ? "" : "the forge did not answer now: this is the last reading, if any" };
+  const view = tracker.seen.get(task.id);
+  const answered = view !== before;
+  // A pass already reading the card answers without a search: what it did not compare is still said.
+  return { searched: answered && view !== undefined && tracker.wasSearched(view), late: answered ? "" : "the forge did not answer now: this is the last reading, if any" };
 }
 
 const RANK: Record<Coverage, number> = { confirmed: 0, partial: 1, possible: 2, none: 3 };

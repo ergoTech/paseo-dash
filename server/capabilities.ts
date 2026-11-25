@@ -224,7 +224,7 @@ export const OPERATIONS: OperationSpec[] = [
     title: "Review before starting",
     description:
       "Per open card: coverage (only confirmed is done), related cards, PR/MRs, open criteria, next; roots: what holds most cards. Changes nothing.",
-    // No output.fields: the answer's own order (note, counts, roots, then cards) is what God Mode reads out.
+    // No output.fields: the answer's own order (note, summary, counts, roots, cards) is what God Mode reads out.
     input: readyReviewInput,
     outcome: READ_OUTCOME,
     untrusted: true,

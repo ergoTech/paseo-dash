@@ -74,6 +74,18 @@ export function prUrlOfProject(url: string, remote: string, webHost?: string): b
   return `${host}/${match[2]}` === normal || (Boolean(webHost) && host === webHost!.toLowerCase() && match[2] === path);
 }
 
+/**
+ * One PR/MR as links of a plan name it: its repository path in any case and its number, so a
+ * trailing slash, a tab of its page (`/files`, `#note`) or the other web host of a project does not
+ * make it another one; the URL itself when it names none. The host is left out, so two forges with
+ * one path would collide: use it only where that costs a doubt, never to call two PR/MRs the same
+ * work.
+ */
+export function prKey(url: string): string {
+  const named = /^https:\/\/[^/\s]+\/(.+?)\/(?:-\/merge_requests|pull)\/(\d+)(?:[/?#]\S*)?$/.exec(url.trim());
+  return named ? `${named[1]!.toLowerCase()}#${named[2]}` : url.trim();
+}
+
 /** The repository path and number a PR/MR URL names: `frontend/site` and `975`; undefined when it names none. */
 function prPath(url: string): { path: string; number: string } | undefined {
   const match = /^https:\/\/[^/\s]+\/(.+?)\/(?:-\/merge_requests|pull)\/(\d+)\/?$/.exec(url.trim());
