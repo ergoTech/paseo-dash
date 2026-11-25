@@ -45,6 +45,7 @@ const EXAMPLES: Record<string, Record<string, unknown>> = {
   delivery: { task: "LAC-7K3QX" },
   reconcile: { space: "LAC", task: "LAC-7K3QX" },
   start_candidates: { space: "LAC", group: "agent", limit: 20 },
+  ready_review: { space: "LAC", project: "core", task: "LAC-7K3QX", limit: 8 },
   tasks_profiles: { tasks: ["LAC-7K3QX", "TOTP contract"] },
   start_task: { task: "LAC-7K3QX" },
   start_plan: { tasks: ["LAC-7K3QX", "TOTP contract"] },

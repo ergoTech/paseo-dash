@@ -17,6 +17,7 @@ import { setup } from "./testing.ts";
 import { readProfiles, readTaskText, updateTasks } from "./batch.ts";
 import { reconcile } from "./reconcile.ts";
 import { startCandidates } from "./candidates.ts";
+import { readyReview } from "./ready-review.ts";
 import { taskDelivery } from "../delivery.ts";
 import { startPlan, startSet } from "./start-set.ts";
 import { readAutopilot, setAutopilot } from "../queue.ts";
@@ -103,6 +104,7 @@ function client(ctx: WriteContext, forge: CommandRunner = async () => ({ code: 1
     "tasks.delivery": (i) => taskDelivery(ctx, i),
     "tasks.reconcile": (i) => reconcile(ctx, i),
     "tasks.start-candidates": (i) => startCandidates(ctx, i),
+    "tasks.ready-review": (i) => readyReview(ctx, i),
     "tasks.profiles": (i) => readProfiles(ctx, i),
     "tasks.update-many": (i) => updateTasks(ctx, i),
   };
@@ -129,7 +131,7 @@ test("God Mode drives the plugin: reads, a low-risk action twice, task events re
   try {
     const catalog = await pluginReadOn(daemon, {});
     assert.ok(catalog.text.includes(`- ${PLUGIN_NAME} (dashboard): `), catalog.text);
-    assert.equal(catalog.data.plugins[0].reads.length + catalog.data.plugins[0].actions.length, 35);
+    assert.equal(catalog.data.plugins[0].reads.length + catalog.data.plugins[0].actions.length, 36);
     assert.equal(catalog.data.plugins[0].skipped, undefined, "nothing dropped");
 
     const overview = await pluginReadOn(daemon, { plugin: "dashboard" });
@@ -677,6 +679,12 @@ test("God Mode reads and acts through JOBBY-YV2QS's operations, refusals include
     const candidates = await read("start_candidates", { group: "agent" });
     assert.ok(candidates.data.result.tasks.length > 0, candidates.text);
     assert.match(candidates.data.result.note, /Read only/);
+    const review = await read("ready_review", { project: "core" });
+    assert.equal(review.data.refused, undefined, review.text);
+    assert.ok(review.data.result.tasks.length > 0, review.text);
+    assert.match(review.data.result.note, /Read only/);
+    // The spoken text is cut short: every listed card's line comes before the roots, so it survives.
+    for (const line of review.data.result.summary) assert.ok(review.text.includes(line.slice(0, 40)), `${line} is spoken: ${review.text}`);
     const reconciled = await read("reconcile", {});
     assert.equal(reconciled.data.result.error, "", reconciled.text);
     const delivery = await read("delivery", { task: "TST-FX001" });

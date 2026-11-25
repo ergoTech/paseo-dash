@@ -46,7 +46,7 @@ sequenceDiagram
 
 ## Operations
 
-Thirty-five operations: twenty reads, fifteen actions. God Mode keeps at most 40; a small set also keeps the
+Thirty-six operations: twenty-one reads, fifteen actions. God Mode keeps at most 40; a small set also keeps the
 catalog ChatGPT reads on every call short.
 
 | id | kind | method | risk / asks | target | outcome | untrusted |
@@ -58,6 +58,7 @@ catalog ChatGPT reads on every call short.
 | `delivery` | read | `tasks.delivery` | | | `error` | yes |
 | `reconcile` | read | `tasks.reconcile` | | | `error` | yes |
 | `start_candidates` | read | `tasks.start-candidates` | | | `error` | yes |
+| `ready_review` | read | `tasks.ready-review` | | | `error` | yes |
 | `tasks_profiles` | read | `tasks.profiles` | | | `error` | yes |
 | `task_result` | read | `tasks.result` | | | `error` | yes |
 | `roadmap` | read | `roadmap.get` | | | `error` | yes |
@@ -1046,6 +1047,44 @@ time, two after errors, and a brief past 1,200 characters could not be read whol
   (`in_work`, `waiting_for_merge`, `waiting_for_ci`, `waiting_for_stage`, `waiting_for_setup`,
   `ready_for_qa`, `qa_failed`, `qa_passed`, `accepted`), who acts next (agent, CI, deploy, owner, QA),
   why Trello cannot be read from here, and a QA handoff text. `task.delivery` has its one line.
+
+### Ready review
+
+`ready_review` is the look at the open cards before a start, in a space or one project (`project`),
+or at one card (`task`, which also asks that card's forge now). It puts together what
+`start_candidates`, `reconcile`, the PR/MRs, the acceptance lines and the dependencies already say.
+
+| `coverage` | Means |
+| --- | --- |
+| `confirmed` | the card's own PR/MR is merged, every acceptance line is ticked and QA has not failed |
+| `partial` | the card's own facts cover some of it: its merged PR/MR, or ticked lines |
+| `possible` | signals only: open lines worded like lines ticked on another card (`basis: similar`), a related card, a PR/MR that may be its own, an earlier run's handoff |
+| `none` | nothing found; `incomplete` says what was not read |
+
+- A PR/MR is the card's own when its run reported it, its branch names the card or it closed the
+  card's issue; when its title names the card, no other card's run reported it and its branch names no
+  other card; or, tied only by a link or the branch, when no other run reported it, it names no other
+  card, no other card (canceled ones included) is on its branch, and, for a link, no other card links
+  it. A mention in a description is a signal.
+- Related cards are of the same project and not before or after the card in a dependency chain: a
+  shared branch, an alike title, two open lines worded like ticked ones, or, for work that exists, a
+  shared label and title word on top of a card both build on, or a mention with a matching line. A
+  criterion that more than three cards of a project carry relates nothing.
+- `left`: `accept`, `qa` (code merged, lines open; a line may still need code), `fix` (QA failed),
+  `check`, `compare`, `implementation`. A card in review or held by a run keeps that state's own next
+  step (accept or send back; follow the run).
+- `roots`: the tasks others wait for that wait for nothing themselves, with how many open cards of the
+  scope each holds back, directly or through others. A reference to no task is a root; cards on a
+  dependency cycle, or behind one, are counted under no root but in `note`, and say so.
+- PR/MR facts are this Mac's last reading (`read_at`). A card's `incomplete` says what may be wrong:
+  a project not mapped here, a forge that did not answer, a reading over an hour old, a list of latest
+  merges that does not reach back to the card's creation, a card that ran before or one without
+  acceptance lines.
+- It changes no status, closes no card and starts no agent. Starting and accepting stay `start_task`,
+  `start_tasks` and `accept_task`.
+
+The default page is eight cards, covered ones first. God Mode's spoken text is cut short, so `note`
+and `summary` (one short line per listed card) come first in the answer, before `counts` and `roots`.
 
 ### Actions
 

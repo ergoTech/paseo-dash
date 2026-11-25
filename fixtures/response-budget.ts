@@ -6,7 +6,7 @@ import { RESPONSES, type ResponseName, type ResponseSizes } from "./response-siz
  * shrinks a reply lowers its number, or the room it freed can fill up again unnoticed.
  */
 export const MEASURED: ResponseSizes = {
-  "meta.describe": 21910,
+  "meta.describe": 22431,
   overview: 5837,
   tasks: 4906,
   tasks_query: 6895,
@@ -24,13 +24,14 @@ export const CEILING: Partial<Record<ResponseName, number>> = { plan_tools: 1024
 export const ROOM = 1.05;
 
 /**
- * meta.describe stays within 21.5 KiB whatever the room says: God Mode reads it for every call and
+ * meta.describe stays within 22 KiB whatever the room says: God Mode reads it for every call and
  * shows ChatGPT each operation's arguments with every read. 16 KiB from JOBBY-NY4D4; raised by the
  * user for resume_task and its read-back (JOBBY-TGHP0), then for the reads and the batch action of
  * JOBBY-YV2QS (task_text, delivery, reconcile, start_candidates, tasks_profiles, update_tasks) and
- * update_task's requires, readiness_note and delivery.
+ * update_task's requires, readiness_note and delivery. Raised from 21.5 KiB for the ready_review
+ * read (JOBBY-8DW17), in the pull request that adds it.
  */
-export const DESCRIBE_CEILING = 21.5 * 1024;
+export const DESCRIBE_CEILING = 22 * 1024;
 
 export const budgetOf = (name: ResponseName): number => {
   const budget = Math.ceil(MEASURED[name] * ROOM);

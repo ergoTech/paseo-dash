@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Review before starting
+
+- Live's "Review before starting" and ChatGPT's `ready_review` look at the open cards of a space or a
+  project before a start: per card what covers it already and how that is known (confirmed, partly,
+  a possible match, nothing found), its PR/MRs, the related cards, the open acceptance lines, what
+  remains and the next step, with missing data said. Only the card's own merged PR/MR and ticked lines
+  confirm anything; a similar title, a shared branch or a mention is a signal.
+- It names the tasks that hold the most cards back through dependencies, so the next step for a
+  project is visible. It changes no status, closes no card and starts no agent.
+  `meta.describe` grows from 21,910 to 22,431 bytes; its ceiling is raised from 21.5 to 22 KiB.
+
 ### Tasks and chats from voice
 
 - `create_task` takes `agent_profile`: a profile you name goes with the new task, so a start queued by

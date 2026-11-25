@@ -95,10 +95,12 @@ import {
   updateTasksCheckRpc,
   updateTasksRpc,
   startCandidatesRpc,
+  readyReviewRpc,
   tasksDeliveryRpc,
 } from "./shared/api.ts";
 import { taskDelivery } from "./server/delivery.ts";
 import { startCandidates } from "./server/api/candidates.ts";
+import { readyReview } from "./server/api/ready-review.ts";
 import { readProfiles, readTaskText, updateTasks, updateTasksCheck } from "./server/api/batch.ts";
 import { reconcile } from "./server/api/reconcile.ts";
 import { mapRpc } from "./shared/map.ts";
@@ -214,6 +216,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(updateTasksRpc, started((input) => updateTasks(ctx, input)));
   server.handle(taskTextRpc, started((input) => readTaskText(ctx, input)));
   server.handle(startCandidatesRpc, started((input) => startCandidates(ctx, input)));
+  server.handle(readyReviewRpc, started((input) => readyReview(ctx, input)));
   server.handle(tasksDeliveryRpc, started((input) => taskDelivery(ctx, input)));
   // The read-back of accepting a task's work: who holds it and its PR/MR's checks and review.
   server.handle(acceptCheckRpc, started((input) => acceptCheck(ctx, input)));
