@@ -169,12 +169,22 @@ export interface IdForms {
   full?: string;
   /** `7K3QX`: the suffix alone, typed with a digit or in capitals. */
   suffix?: string;
+  /**
+   * The beginnings of an id the text may be, typed with a digit or in capitals: `LAC-7K` (a space
+   * key, a dash or nothing, then one to four characters) or `7K3` (two to four characters of a
+   * suffix, in any space). `AB3` with a space AB is both.
+   */
+  prefixes?: { key?: string; suffix: string }[];
 }
+
+/** One to four characters of the suffix alphabet: the beginning of a suffix. */
+const SUFFIX_START = /^[0-9A-HJKMNP-TV-Z]{1,4}$/;
 
 /**
  * The id a text names, however it was typed: any case, with or without the dash, with spaces, with
  * Cyrillic look-alikes. A whole id counts only with the prefix of a connected space, so «Add login»
- * is never read as an id; a suffix alone only with a digit or in capitals, so a word is not one.
+ * is never read as an id; a suffix alone, or the beginning of an id, only with a digit or in
+ * capitals, so a word is not one.
  */
 export function idForms(text: string, spaceKeys: Iterable<string>): IdForms {
   const trimmed = text.trim();
@@ -188,10 +198,21 @@ export function idForms(text: string, spaceKeys: Iterable<string>): IdForms {
     const suffix = crockford(packed.slice(-5));
     if (keys.has(prefix) && SUFFIX.test(suffix)) return { full: `${prefix}-${suffix}` };
   }
-  if (packed.length === 5) {
-    const suffix = crockford(packed);
-    const typedAsId = /\d/.test(trimmed) || trimmed === trimmed.toUpperCase();
-    if (typedAsId && SUFFIX.test(suffix)) return { suffix };
+  const typedAsId = /\d/.test(trimmed) || trimmed === trimmed.toUpperCase();
+  if (!typedAsId) return {};
+  const out: IdForms = {};
+  if (packed.length === 5 && SUFFIX.test(crockford(packed))) out.suffix = crockford(packed);
+  // A beginning is typed in one piece: «lac fix» is two words, not LAC-F1X. After a space key it is
+  // read as Crockford reads a suffix; alone only O reads as 0, so «LAC» stays a word, not 1AC.
+  const piece = latin.replace(/-/, "");
+  if (/[^A-Z0-9]/.test(piece)) return out;
+  const start = (text: string) => text.replace(/O/g, "0");
+  const prefixes: { key?: string; suffix: string }[] = [];
+  for (const key of keys) {
+    const rest = piece.startsWith(key) ? crockford(piece.slice(key.length)) : "";
+    if (SUFFIX_START.test(rest)) prefixes.push({ key, suffix: rest });
   }
-  return {};
+  if (piece.length >= 2 && SUFFIX_START.test(start(piece))) prefixes.push({ suffix: start(piece) });
+  if (prefixes.length) out.prefixes = prefixes;
+  return out;
 }

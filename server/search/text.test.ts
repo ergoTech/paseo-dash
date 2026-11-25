@@ -61,3 +61,20 @@ test("an id is read however it was typed; a word is not taken for one", () => {
   assert.deepEqual(idForms("XYZ-7K3QX", keys), {}, "nor is an unknown space's");
   assert.deepEqual(idForms("lac-7k3qu", keys), {}, "U is not in the alphabet");
 });
+
+test("the beginning of an id is read when typed with a digit or in capitals, in one piece", () => {
+  const keys = ["LAC", "AB"];
+  assert.deepEqual(idForms("0QH", keys), { prefixes: [{ suffix: "0QH" }] });
+  assert.deepEqual(idForms("0qh", keys), { prefixes: [{ suffix: "0QH" }] }, "a digit makes it an id");
+  assert.deepEqual(idForms("OQH", keys), { prefixes: [{ suffix: "0QH" }] }, "O reads as 0");
+  assert.deepEqual(idForms("7K", keys), { prefixes: [{ suffix: "7K" }] });
+  assert.deepEqual(idForms("lac-7k1", keys), { prefixes: [{ key: "LAC", suffix: "7K1" }] });
+  assert.deepEqual(idForms("lac-7kl", keys), { prefixes: [{ key: "LAC", suffix: "7K1" }] }, "after a key, L reads as 1");
+  assert.deepEqual(idForms("LAC-7", keys), { prefixes: [{ key: "LAC", suffix: "7" }] }, "with its key, one character is enough");
+  assert.deepEqual(idForms("AB3", keys), { prefixes: [{ key: "AB", suffix: "3" }, { suffix: "AB3" }] }, "a space AB: both readings");
+  assert.deepEqual(idForms("LAC7K", keys), { suffix: "1AC7K", prefixes: [{ key: "LAC", suffix: "7K" }] }, "five characters may be a whole suffix too");
+  assert.deepEqual(idForms("7", keys), {}, "one character alone is no beginning");
+  assert.deepEqual(idForms("LAC", keys), {}, "a key alone is a word: L and I are no letters of a suffix");
+  assert.deepEqual(idForms("lac fix", keys), {}, "two words are no id");
+  assert.deepEqual(idForms("dev", keys), {}, "a word in lowercase is a word");
+});

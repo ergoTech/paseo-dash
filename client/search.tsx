@@ -16,7 +16,8 @@ import { Mark, SpaceTag, type Styles } from "./common.tsx";
  * empty and focused, the places opened last. ↑ ↓ choose and Enter opens on the web and desktop apps;
  * Enter alone opens the first result of the words in the field (waiting for their search when it
  * has not answered yet), so an id and Enter opens its task. Esc clears, then leaves. The results
- * show while the field has the focus, and stay through a press on one of them.
+ * show while the field has the focus, and stay through a press on one of them; in a popover they
+ * show while it is open, and the field takes the focus once the popover is placed.
  */
 
 type Theme = PluginHostProps["theme"];
@@ -36,6 +37,11 @@ const SHOWN = 8;
 const DEBOUNCE_MS = 150;
 /** After the field loses the focus (and no result is being pressed), the results go this much later. */
 const BLUR_GRACE_MS = 200;
+/**
+ * Frames a popover's field keeps asking for the focus after it opens: Paseo's popover places itself
+ * and settles the focus on frames of its own, after the field's autoFocus ran.
+ */
+const FOCUS_FRAMES = 10;
 
 type Row =
   | { kind: "task"; id: string; title: string; glyph: Parameters<typeof Mark>[0]["glyph"]; note: string; quote: string }
@@ -82,6 +88,7 @@ export function SearchPanel({
   compact,
   inputRef,
   autoFocus,
+  persistent,
   leading,
   trailing,
 }: {
@@ -93,6 +100,8 @@ export function SearchPanel({
   compact: boolean;
   inputRef?: RefObject<TextInput | null>;
   autoFocus?: boolean;
+  /** In a popover: the results show while it is open, whatever has the focus, and the field takes the focus. */
+  persistent?: boolean;
   /** Beside the field, before and after it (the top bar's "‹ Back" and needs-you count). */
   leading?: ReactNode;
   trailing?: ReactNode;
@@ -115,6 +124,18 @@ export function SearchPanel({
     return () => clearTimeout(timer);
   }, [text]);
   useEffect(() => () => clearTimeout(blurTimer.current), []);
+  // A popover settles the focus after its content mounted: ask for it again while the field lacks it.
+  useEffect(() => {
+    if (!persistent) return;
+    let frames = 0;
+    let frame = requestAnimationFrame(function ask() {
+      if (input.current && !input.current.isFocused()) input.current.focus();
+      frames += 1;
+      if (frames < FOCUS_FRAMES) frame = requestAnimationFrame(ask);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [persistent, input]);
+  const shown = persistent || focused;
   // Each new search starts at its first result.
   useEffect(() => setSelected(0), [words, everywhere]);
   const scope = everywhere ? "" : space;
@@ -128,7 +149,7 @@ export function SearchPanel({
     placeholderData: (previous) => previous,
   });
   const readRecent = useRpc(uiRecentRpc);
-  const recent = useQuery({ queryKey: ["dashboard", "recent"], queryFn: () => readRecent({}), enabled: focused && !text.trim() });
+  const recent = useQuery({ queryKey: ["dashboard", "recent"], queryFn: () => readRecent({}), enabled: shown && !text.trim() });
   const remember = useRememberPlace();
 
   const typed = text.trim();
@@ -323,7 +344,7 @@ export function SearchPanel({
         ) : null}
         {trailing}
       </View>
-      {focused ? (
+      {shown ? (
         <View accessibilityRole="list" style={[styles.card, { gap: 2 }]}>
           {!typed ? <Text style={styles.muted}>{rows.length ? "Opened lately" : "Type words of a task, a feature or a release, or an id."}</Text> : null}
           {typed && !/[\p{L}\p{N}]/u.test(typed) ? <Text style={styles.muted}>Type a letter or a digit.</Text> : null}
