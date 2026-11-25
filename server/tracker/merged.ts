@@ -6,6 +6,16 @@ import type { SpaceSync } from "../sync/space-sync.ts";
 import { type ForgeCli, type ForgePr, prUrlOfProject } from "./forge.ts";
 
 /**
+ * How a merged PR/MR is tied to a task, each checked in the task's own project only: its branch (the
+ * planned one), a link of the task, the task's id in its title, description or source branch (so a
+ * session that named its branch otherwise is still found: ERG-7MRG1 and site !412), or the forge
+ * naming it as the one that closed the task's issue. An issue number or a similar title alone never
+ * ties one: the same number is another issue in another repository.
+ */
+export const MATCHED_BY = ["branch", "link", "id_in_title", "id_in_description", "id_in_branch", "closes_issue"] as const;
+export type MatchedBy = (typeof MATCHED_BY)[number];
+
+/**
  * Work merged outside the dashboard (03-model.md, Work merged outside the dashboard): a task that
  * never ran, in `todo` or `inbox`, or one in progress that no live run holds (`unheld`),
  * whose branch's latest PR/MR, or a PR/MR of its project among its `links`, was merged after the task
@@ -23,6 +33,11 @@ export interface MergedPr {
   label: string;
   url: string;
   merged_at: string;
+  /** The merge's commit on the target branch, when the forge names it. */
+  sha?: string;
+  /** The PR/MR's own source branch. */
+  branch?: string;
+  by: MatchedBy[];
 }
 
 export interface MergedView {
@@ -41,6 +56,8 @@ export interface MergedTrackerOptions {
   everyMs?: number;
   /** Whether this machine's project checkouts are known yet; before that nothing can be read. */
   ready?: () => boolean;
+  /** The PR/MR URLs the forge says closed the task's issue (server/tracker/issues.ts), as last read here. */
+  issueClosers?: (plan: Plan, task: Task) => string[];
   log?: (message: string) => void;
 }
 
@@ -49,8 +66,11 @@ const LINKS_READ = 5;
 /** A screen's read starts a new pass when the last one ended longer ago than this. */
 const FRESH_MS = 5 * 60_000;
 
-/** What a task is checked by: its branch, when it or its feature names one, and its links to PR/MRs of its project. */
+/** What a task is checked by: its id, its branch when it or its feature names one, and its links to PR/MRs of its project. */
 export interface MergedCandidates {
+  id: string;
+  /** The space's project key: a pass reads each project's latest merges once. */
+  project: string;
   remote: string;
   webHost?: string;
   branch?: string;
@@ -62,9 +82,9 @@ export interface MergedCandidates {
  * The candidates of a task this machine follows: `todo` or `inbox` never started (no `run_id`; a task
  * with a run is followed by its run's PR/MR), or in progress with no live run (`unheld`: a
  * session outside the dashboard set the status, so no run's PR/MR is followed), in a project of the
- * space, with a `created` time
- * to compare merges with, and with a branch or a PR/MR link to look up. The default branch name
- * (`task/<id>-<slug>`) is not looked up: only a start makes it, and a start makes a run.
+ * space, with a `created` time to compare merges with. Its id is always looked for in the project's
+ * latest merges; its branch only when it or its feature names one (the default `task/<id>-<slug>`
+ * holds the id already), and its links to PR/MRs of the project.
  */
 export function mergedCandidates(plan: Plan, task: Task): MergedCandidates | undefined {
   const neverRan = (task.status === "todo" || task.status === "inbox") && !task.run_id;
@@ -76,8 +96,30 @@ export function mergedCandidates(plan: Plan, task: Task): MergedCandidates | und
   const planned = named ? plannedBranch(plan, task) : undefined;
   const branch = planned && SAFE_BRANCH.test(planned) ? planned : undefined;
   const links = [...new Set(task.links.map((link) => link.trim()).filter((link) => prUrlOfProject(link, project.remote, project.web_host)))].slice(0, LINKS_READ);
-  if (!branch && !links.length) return undefined;
-  return { remote: project.remote, ...(project.web_host ? { webHost: project.web_host } : {}), ...(branch ? { branch } : {}), links, key: [branch ?? "", ...links, task.created].join("\n") };
+  return {
+    id: task.id,
+    project: task.project,
+    remote: project.remote,
+    ...(project.web_host ? { webHost: project.web_host } : {}),
+    ...(branch ? { branch } : {}),
+    links,
+    key: [task.id, task.project, branch ?? "", ...links, task.created].join("\n"),
+  };
+}
+
+/** The task's id as a token of a text: not part of a longer id or word; any case (branches are lower case). */
+function idIn(text: string | undefined, id: string): boolean {
+  if (!text) return false;
+  return new RegExp(`(?<![A-Za-z0-9])${id}(?![A-Za-z0-9])`, "i").test(text);
+}
+
+/** How a merged PR/MR names the task's id: its title, description or source branch; empty when it does not. */
+export function idMatches(pr: Pick<ForgePr, "title" | "body" | "head">, id: string): MatchedBy[] {
+  const by: MatchedBy[] = [];
+  if (idIn(pr.title, id)) by.push("id_in_title");
+  if (idIn(pr.body, id)) by.push("id_in_description");
+  if (idIn(pr.head, id)) by.push("id_in_branch");
+  return by;
 }
 
 export class MergedTracker {
@@ -92,6 +134,8 @@ export class MergedTracker {
   private readonly inFlight = new Map<string, Promise<void>>();
   /** When each task was last asked for, answered or not: a task screen does not ask again before FRESH_MS. */
   private readonly asked = new Map<string, number>();
+  /** Each project's latest merges as the last pass read them, by `<space>:<project>`; absent when the forge did not answer. */
+  private readonly recent = new Map<string, { at: number; prs: ForgePr[] }>();
 
   constructor(options: MergedTrackerOptions) {
     this.options = options;
@@ -121,19 +165,27 @@ export class MergedTracker {
     void this.checkAll().catch(() => undefined);
   }
 
-  /** Every followed task once, one at a time. */
+  /** Every followed task once, one at a time; each project's latest merges once per pass. */
   async checkAll(): Promise<void> {
     if (this.checking || this.options.ready?.() === false) return;
     this.checking = true;
     try {
       const followed = new Set<string>();
+      const listed = new Set<string>();
       for (const space of this.options.spaces()) {
         for (const loaded of [...space.sync.plan.entities.values()]) {
           if (this.stopped) return;
           const task = loaded.entity;
-          if (task.type !== "task" || !mergedCandidates(space.sync.plan, task)) continue;
+          if (task.type !== "task") continue;
+          const wanted = mergedCandidates(space.sync.plan, task);
+          if (!wanted) continue;
           followed.add(task.id);
-          await this.check(space, task).catch((error: unknown) => this.options.log?.(`merged check of ${task.id}: ${(error as Error).message}`));
+          const projectKey = recentKey(space, wanted.project);
+          if (!listed.has(projectKey)) {
+            listed.add(projectKey);
+            await this.readRecent(space, wanted).catch((error: unknown) => this.options.log?.(`merged list of ${wanted.project}: ${(error as Error).message}`));
+          }
+          await this.check(space, task, { search: false }).catch((error: unknown) => this.options.log?.(`merged check of ${task.id}: ${(error as Error).message}`));
         }
       }
       // A task started, finished, or edited out of the check meanwhile shows nothing any more.
@@ -145,35 +197,64 @@ export class MergedTracker {
     }
   }
 
-  /** Reads one task now; a read of the same task already going on is shared. */
-  check(space: { sync: SpaceSync; mapping: Record<string, string | null> }, task: Task): Promise<void> {
+  /** A project's latest merges, read once per pass; a forge that does not answer leaves the last list. */
+  private async readRecent(space: { sync: SpaceSync; mapping: Record<string, string | null> }, wanted: MergedCandidates): Promise<void> {
+    const projectId = space.mapping[wanted.project];
+    const root = projectId ? this.options.projectRoot(projectId) : undefined;
+    if (!root) return;
+    const prs = await this.options.forge.merged(root, wanted.remote);
+    if (prs && !this.stopped) this.recent.set(recentKey(space, wanted.project), { at: this.now().getTime(), prs });
+  }
+
+  /**
+   * Reads one task now; a read of the same task already going on is shared. With `search` (a screen
+   * or a reconcile asking for this one task) the forge is also searched for the task's id, beyond the
+   * project's latest merges a pass reads.
+   */
+  check(space: { sync: SpaceSync; mapping: Record<string, string | null> }, task: Task, options: { search?: boolean } = {}): Promise<void> {
     const running = this.inFlight.get(task.id);
     if (running) return running;
     this.asked.set(task.id, this.now().getTime());
-    const read = this.read(space, task).finally(() => this.inFlight.delete(task.id));
+    const read = this.read(space, task, options.search ?? true).finally(() => this.inFlight.delete(task.id));
     this.inFlight.set(task.id, read);
     return read;
   }
 
-  private async read(space: { sync: SpaceSync; mapping: Record<string, string | null> }, task: Task): Promise<void> {
+  private async read(space: { sync: SpaceSync; mapping: Record<string, string | null> }, task: Task, search: boolean): Promise<void> {
     const wanted = mergedCandidates(space.sync.plan, task);
     const projectId = task.project ? space.mapping[task.project] : undefined;
     const root = projectId ? this.options.projectRoot(projectId) : undefined;
     if (!wanted || !root) return;
     const forge = this.options.forge;
-    const found: ForgePr[] = [];
+    const found: { pr: ForgePr; by: MatchedBy[] }[] = [];
     let unanswered = 0;
     for (const link of wanted.links) {
       if (this.stopped) return;
       const pr = await forge.byUrl(root, wanted.remote, link, wanted.webHost);
-      if (pr) found.push(pr);
+      if (pr) found.push({ pr, by: ["link"] });
       else unanswered += 1;
     }
     if (wanted.branch && !this.stopped) {
       const prs = await forge.byBranch(root, wanted.remote, wanted.branch);
       // The branch's latest PR/MR: an open one after a merged one carries work not merged yet.
-      if (prs?.[0]) found.push(prs[0]);
+      if (prs?.[0]) found.push({ pr: prs[0], by: ["branch"] });
       else if (!prs) unanswered += 1;
+    }
+    // The task's id in the project's latest merges, and on request in the forge's search of them.
+    const recent = this.recent.get(recentKey(space, wanted.project))?.prs ?? [];
+    const searched = search && !this.stopped ? await forge.merged(root, wanted.remote, { search: wanted.id, max: 20 }) : [];
+    if (searched === undefined) unanswered += 1;
+    for (const pr of [...recent, ...(searched ?? [])]) {
+      const by = idMatches(pr, wanted.id);
+      if (by.length) found.push({ pr, by });
+    }
+    // The PR/MRs the forge says closed the task's issue, when they are the project's own.
+    for (const url of (this.options.issueClosers?.(space.sync.plan, task) ?? []).slice(0, LINKS_READ)) {
+      if (this.stopped) return;
+      if (!prUrlOfProject(url, wanted.remote, wanted.webHost)) continue;
+      const pr = await forge.byUrl(root, wanted.remote, url, wanted.webHost);
+      if (pr) found.push({ pr, by: ["closes_issue"] });
+      else unanswered += 1;
     }
     if (this.stopped) return;
     const merged = mergedAfter(found, task.created!);
@@ -205,14 +286,35 @@ export class MergedTracker {
   }
 }
 
-/** The merged PR/MRs of `found` merged after the task was created, each once; pure. */
-export function mergedAfter(found: ForgePr[], created: string): MergedPr[] {
+/** `<space>:<project>`: one project of one space, whose latest merges a pass reads once. */
+function recentKey(space: { sync: SpaceSync }, project: string): string {
+  return `${space.sync.plan.space?.key ?? ""}:${project}`;
+}
+
+/**
+ * The merged PR/MRs of `found` merged after the task was created, each once with every way it was
+ * tied to the task; pure. Newest merge first.
+ */
+export function mergedAfter(found: (ForgePr | { pr: ForgePr; by: MatchedBy[] })[], created: string): MergedPr[] {
   const since = Date.parse(created);
   const out = new Map<string, MergedPr>();
-  for (const pr of found) {
+  for (const item of found) {
+    const { pr, by } = "pr" in item ? item : { pr: item, by: [] as MatchedBy[] };
     const at = Date.parse(pr.mergedAt ?? "");
     if (pr.state !== "merged" || !Number.isFinite(at) || !Number.isFinite(since) || at <= since) continue;
-    out.set(pr.url, { label: pr.label, url: pr.url, merged_at: pr.mergedAt! });
+    const seen = out.get(pr.url);
+    if (seen) {
+      for (const way of by) if (!seen.by.includes(way)) seen.by.push(way);
+      continue;
+    }
+    out.set(pr.url, {
+      label: pr.label,
+      url: pr.url,
+      merged_at: pr.mergedAt!,
+      ...(pr.mergeSha ? { sha: pr.mergeSha } : {}),
+      ...(pr.head ? { branch: pr.head } : {}),
+      by: [...by],
+    });
   }
-  return [...out.values()];
+  return [...out.values()].sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at));
 }

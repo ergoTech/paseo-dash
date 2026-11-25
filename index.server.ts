@@ -89,7 +89,18 @@ import {
   startPlanRpc,
   tasksStartSetRpc,
   tasksUpdateRpc,
+  reconcileRpc,
+  taskTextRpc,
+  tasksProfilesRpc,
+  updateTasksCheckRpc,
+  updateTasksRpc,
+  startCandidatesRpc,
+  tasksDeliveryRpc,
 } from "./shared/api.ts";
+import { taskDelivery } from "./server/delivery.ts";
+import { startCandidates } from "./server/api/candidates.ts";
+import { readProfiles, readTaskText, updateTasks, updateTasksCheck } from "./server/api/batch.ts";
+import { reconcile } from "./server/api/reconcile.ts";
 import { mapRpc } from "./shared/map.ts";
 import { uiBoardRpc } from "./shared/board.ts";
 import { labelsPutRpc, labelsRemoveRpc, peoplePutRpc, peopleRemoveRpc } from "./shared/labels.ts";
@@ -197,6 +208,13 @@ export default function contribute(server: PluginServerContext) {
   server.handle(releaseCheckRpc, started((input) => releaseCheck(ctx, input)));
   // A PR/MR's checks and review from gh / glab (server/result.ts), the task screen's read for God Mode.
   server.handle(tasksResultRpc, started((input) => taskChecks(ctx, input)));
+  server.handle(reconcileRpc, started((input) => reconcile(ctx, input)));
+  server.handle(tasksProfilesRpc, started((input) => readProfiles(ctx, input)));
+  server.handle(updateTasksCheckRpc, started((input) => updateTasksCheck(ctx, input)));
+  server.handle(updateTasksRpc, started((input) => updateTasks(ctx, input)));
+  server.handle(taskTextRpc, started((input) => readTaskText(ctx, input)));
+  server.handle(startCandidatesRpc, started((input) => startCandidates(ctx, input)));
+  server.handle(tasksDeliveryRpc, started((input) => taskDelivery(ctx, input)));
   // The read-back of accepting a task's work: who holds it and its PR/MR's checks and review.
   server.handle(acceptCheckRpc, started((input) => acceptCheck(ctx, input)));
   server.handle(inboxAddRpc, started((input) => addToInbox(ctx, input)));

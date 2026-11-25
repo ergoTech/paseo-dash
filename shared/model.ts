@@ -79,6 +79,88 @@ const scalarText = z
     return value instanceof Date ? value.toISOString() : String(value);
   });
 
+/**
+ * What a task waits for besides other tasks (03-model.md, Requirements): a person's decision or
+ * hands, an environment, a device, an access, a QA pass. Each says why and when it was last checked.
+ * An entry of another kind reads as `owner`, so a typo never makes a task look ready for an agent.
+ */
+export const REQUIREMENT_KINDS = ["owner", "decision", "environment", "device", "access", "qa"] as const;
+export type RequirementKind = (typeof REQUIREMENT_KINDS)[number];
+
+const requirementList = z
+  .unknown()
+  .optional()
+  .transform((value) => {
+    const items = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+    const out: { kind: RequirementKind; reason: string; checked?: string }[] = [];
+    for (const item of items) {
+      if (typeof item === "string" && item.trim()) {
+        out.push({ kind: "owner", reason: item.trim() });
+        continue;
+      }
+      if (!item || typeof item !== "object") continue;
+      const record = item as Record<string, unknown>;
+      const kind = (REQUIREMENT_KINDS as readonly string[]).includes(String(record.kind)) ? (record.kind as RequirementKind) : "owner";
+      const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+      const checked = record.checked instanceof Date ? record.checked.toISOString() : typeof record.checked === "string" && record.checked.trim() ? record.checked.trim() : undefined;
+      out.push({ kind, reason: reason || `a ${kind} requirement`, ...(checked ? { checked } : {}) });
+    }
+    return out;
+  });
+export type Requirement = z.output<typeof requirementList>[number];
+
+/** QA's verdict on a task's acceptance, apart from its code being merged. */
+export const QA_RESULTS = ["pending", "passed", "failed"] as const;
+
+const flag = z
+  .unknown()
+  .optional()
+  .transform((value) => (typeof value === "boolean" ? value : undefined));
+
+/**
+ * The way from a merged PR/MR to accepted work (03-model.md, Delivery): the build on stage, the flags
+ * and access it needs, the device QA tests on, the Trello card and QA's result. Facts a person or an
+ * agent recorded, each read leniently: a value of the wrong type reads as absent.
+ */
+export const deliverySchema = z
+  .unknown()
+  .optional()
+  .transform((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    const str = (key: string) => {
+      const v = record[key];
+      if (v instanceof Date) return v.toISOString();
+      if (typeof v === "number") return String(v);
+      return typeof v === "string" && v.trim() ? v.trim() : undefined;
+    };
+    const list = (key: string) => {
+      const v = record[key];
+      const items = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
+      return items.filter((item): item is string => typeof item === "string" && item.trim() !== "").map((item) => item.trim());
+    };
+    const qa = str("qa");
+    const out = {
+      stage_sha: str("stage_sha"),
+      stage_url: str("stage_url"),
+      stage_version: str("stage_version"),
+      stage_checked: str("stage_checked"),
+      flags: list("flags"),
+      flags_ready: flag.parse(record.flags_ready),
+      access_ready: flag.parse(record.access_ready),
+      device: str("device"),
+      device_ready: flag.parse(record.device_ready),
+      trello: str("trello"),
+      trello_state: str("trello_state"),
+      trello_checked: str("trello_checked"),
+      qa: qa && (QA_RESULTS as readonly string[]).includes(qa) ? (qa as (typeof QA_RESULTS)[number]) : undefined,
+      qa_note: str("qa_note"),
+      qa_at: str("qa_at"),
+    };
+    return out;
+  });
+export type Delivery = NonNullable<z.output<typeof deliverySchema>>;
+
 const common = {
   id: z.string().regex(ID_PATTERN),
   title: z.string().min(1),
@@ -152,6 +234,13 @@ export const taskSchema = z.object({
    * task is done or canceled; a reopen clears it. The file, its run and its PR/MR stay as they are.
    */
   archived: scalarText,
+  /** What the task waits for besides other tasks: a person, an environment, a device, an access, QA. */
+  requires: requirementList,
+  /** When a person last checked that the task can start as it is, and what they found. */
+  readiness_checked: scalarText,
+  readiness_note: text,
+  /** From merged code to accepted work: stage build, flags, access, device, Trello card, QA. */
+  delivery: deliverySchema,
 });
 
 export const spaceSchema = z.object({

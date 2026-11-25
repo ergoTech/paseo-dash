@@ -242,7 +242,7 @@ test("needs you: one item per task, most urgent kind first, and a space's change
     store.setActivity(run, "failed", "2026-10-26T10:00:00Z", { error: "the turn failed:\n  rate limited" });
     assert.deepEqual(kinds(), [["failed", "TST-FX001", "the turn failed: rate limited"]], "a reason is one line");
     store.setActivity(run, "stopped", "2026-10-26T10:01:00Z");
-    assert.deepEqual(kinds(), [["stopped", "TST-FX001", "its agent is gone while the task is still open"]]);
+    assert.deepEqual(kinds(), [["stopped", "TST-FX001", "its agent is gone while the task is still open; no PR/MR; no handoff; 1 of 2 acceptance lines open"]], "with what the run left");
     // A tracked checkout on the trunk ends with its workspace archived: not a gone agent, nor a
     // failure, yet only the user moves its task on, by whether its work landed.
     run.adopted = { kind: "checkout", trunk: "main" } as never;

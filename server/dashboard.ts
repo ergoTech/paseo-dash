@@ -30,6 +30,11 @@ import { IssueWriter } from "./issues/forge-write.ts";
 import { IssueMirror, type IssueMirrorOptions, MirrorStore } from "./issues/mirror.ts";
 import { PrTracker, type PrTrackerOptions } from "./tracker/prs.ts";
 import { MergedTracker, type MergedTrackerOptions } from "./tracker/merged.ts";
+import { WebHosts } from "./tracker/web-host.ts";
+import { BatchStore } from "./api/batch.ts";
+import { WaitProbe } from "./wait.ts";
+import { subAgentsAtWork } from "./needs.ts";
+import { prDetails } from "./tracker/details.ts";
 import { readLanded } from "./tracker/landed.ts";
 import { SeenStore } from "./runner/seen.ts";
 import { EventStore, noteActivity } from "./events.ts";
@@ -160,12 +165,18 @@ export class Dashboard {
   readonly issues: IssueTracker;
   /** Work merged outside the dashboard for tasks that never ran (server/tracker/merged.ts). */
   readonly merged: MergedTracker;
+  /** GitLab projects' web hosts as their forges name them (server/tracker/web-host.ts). */
+  readonly webHosts: WebHosts;
+  /** What idle run agents wait on: their child agents and their PR/MR's checks (server/wait.ts). */
+  readonly waits: WaitProbe;
   /** The one-way issue mirror (server/issues/mirror.ts); writes only where its switch is on. */
   readonly mirror: IssueMirror;
   /** This machine's mirror switches and the issues the mirror made; owner only. */
   mirrorStore: MirrorStore | undefined;
   /** What the local user last saw of each task's instructions; owner only. */
   seen: SeenStore | undefined;
+  /** update_tasks' checkpoints per idempotency key (server/api/batch.ts); owner only. */
+  batches: BatchStore | undefined;
   /** Task events of this machine's runs (server/events.ts). */
   events: EventStore | undefined;
   /** This machine's Laconote URLs, key and imports; owner only. */
@@ -203,12 +214,12 @@ export class Dashboard {
       isLive: (run) => this.isLive(run),
       log: (message) => console.error(`dashboard: ${message}`),
       onTurnStarted: (run, cwd) => void this.follower.follow(run, cwd),
-      onAgentSeen: (run, cwd) => void this.follower.follow(run, cwd),
-      onReconciled: () => this.follower.sweep(),
-      onTurnEnded: (run) => {
-        this.checkPrs(run);
-        void this.follower.turnEnded(run.run_id);
+      onAgentSeen: (run, cwd) => {
+        void this.follower.follow(run, cwd);
+        if (run.activity === "waiting") void this.waits.probe(run);
       },
+      onReconciled: () => this.follower.sweep(),
+      onTurnEnded: (run) => void this.turnEnded(run),
       onLastMessage: (run) => {
         if (run.activity === "waiting" && run.lastMessage) this.events?.fill(run.run_id, run.activityAt, run.lastMessage);
       },
@@ -249,9 +260,17 @@ export class Dashboard {
       projectRoot: (projectId) => this.projectRoots.get(projectId),
       forge: this.forge,
       ready: () => this.local !== undefined,
+      // The issues tracker reads before this one is asked: its closers are the forge's own answer.
+      issueClosers: (plan, task) => this.issues.peek(task, plan)?.closedBy ?? [],
       log: (message) => console.error(`dashboard: ${message}`),
       ...options.merged,
     });
+    this.waits = new WaitProbe({
+      paseo: () => this.paseo,
+      checks: (run) => this.ownChecks(run),
+      log: (message) => console.error(`dashboard: ${message}`),
+    });
+    this.webHosts = new WebHosts({ forge: this.forge, cwd: () => this.dataDir, log: (message) => console.error(`dashboard: ${message}`) });
     this.mirror = new IssueMirror({
       spaces: () => (this.owner ? [...this.spaces.values()].map(({ record, sync }) => ({ key: record.key, sync })) : []),
       store: () => (this.owner ? this.mirrorStore : undefined),
@@ -452,6 +471,7 @@ export class Dashboard {
       }
     }
     this.seen = new SeenStore(join(this.dataDir, "seen.json"));
+    this.batches = new BatchStore(this.dataDir);
     if (this.seen.movedAside) this.warnings.push(`the record of seen instructions could not be read and was moved to ${this.seen.movedAside}`);
     this.laconote = new LaconoteStore(this.dataDir);
     for (const aside of this.laconote.movedAside) this.warnings.push(`a Laconote settings file could not be read and was moved to ${aside}`);
@@ -813,12 +833,36 @@ export class Dashboard {
     this.saveRegistry();
   }
 
+  /**
+   * After a turn of a run's agent ended: its PR/MR, the files it touched and what it waits on are read
+   * again. A turn that ended while a sub-agent works is no news for the user: its event is kept read.
+   */
+  async turnEnded(run: RunRecord): Promise<void> {
+    this.checkPrs(run);
+    void this.follower.turnEnded(run.run_id);
+    await this.waits.probe(run, true);
+    if (run.activity === "waiting" && subAgentsAtWork(this, run)) this.events?.quiet(run.run_id, run.activityAt);
+  }
+
+  /** The checks of a run's own open PR/MR as the forge has them now; undefined without one or an answer. */
+  private async ownChecks(run: RunRecord): Promise<string | undefined> {
+    const seen = this.prs.seen.get(run.task);
+    if (!seen || seen.run_id !== run.run_id || (seen.state !== "open" && seen.state !== "draft")) return undefined;
+    const project = this.spaces.get(run.space)?.sync.plan.space?.projects[run.project];
+    const root = this.projectRoots.get(run.projectId);
+    if (!project || !root) return undefined;
+    const forge = this.forge;
+    const details = await prDetails(root, project.remote, seen.url, (command, args, cwd, timeoutMs) => forge.exec(command as "gh" | "glab", args, cwd, timeoutMs));
+    return details.checks?.state;
+  }
+
   stop(): void {
     this.tracker.stop();
     this.follower.stop();
     this.prs.stop();
     this.issues.stop();
     this.merged.stop();
+    this.webHosts.stop();
     this.mirror.stop();
     this.releases.stop();
     this.bridge?.stop();

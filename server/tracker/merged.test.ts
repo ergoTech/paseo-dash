@@ -77,12 +77,21 @@ test("a shared branch name is looked up in each task's own project: site shows !
   );
   const { t } = tracker(plan, cli);
   await t.checkAll();
-  assert.deepEqual(t.shown(plan, plan.entities.get("ERG-96Q3T")!.entity as Task), [{ label: "!975", url: `${SITE}/975`, merged_at: "2026-11-11T22:12:00Z" }], "found by link and by branch: once");
-  assert.deepEqual(t.shown(plan, plan.entities.get("ERG-8XSZH")!.entity as Task), [{ label: "!206", url: `${COMPOSE}/206`, merged_at: "2026-11-11T21:56:00Z" }]);
+  assert.deepEqual(
+    t.shown(plan, plan.entities.get("ERG-96Q3T")!.entity as Task),
+    [{ label: "!975", url: `${SITE}/975`, merged_at: "2026-11-11T22:12:00Z", branch: "feat/member-roles", by: ["link", "branch"] }],
+    "found by link and by branch: once",
+  );
+  assert.deepEqual(t.shown(plan, plan.entities.get("ERG-8XSZH")!.entity as Task), [{ label: "!206", url: `${COMPOSE}/206`, merged_at: "2026-11-11T21:56:00Z", branch: "feat/member-roles", by: ["branch"] }]);
   assert.ok(!calls.some((c) => c.startsWith("prj_site") && c.includes("206")), "the other project's MR in the site task's links is not read in site");
   assert.deepEqual(
-    calls.filter((c) => c.includes("list")),
+    calls.filter((c) => c.includes("--source-branch")),
     ["prj_site glab mr list --source-branch feat/member-roles", "prj_compose glab mr list --source-branch feat/member-roles"],
+  );
+  assert.deepEqual(
+    calls.filter((c) => c.includes("--merged")),
+    ["prj_site glab mr list --merged --order", "prj_compose glab mr list --merged --order"],
+    "each project's latest merges once per pass, in its own checkout",
   );
   assert.equal((plan.entities.get("ERG-96Q3T")!.entity as Task).status, "todo", "the status never changes by itself");
 });
@@ -102,7 +111,7 @@ test("GitHub: a PR among the links merged after the task was created; an older o
   await t.checkAll();
   const shown = (id: string) => t.shown(plan, plan.entities.get(id)!.entity as Task).map((pr) => pr.label);
   assert.deepEqual([shown("TST-GH001"), shown("TST-GH002"), shown("TST-GH003"), shown("TST-GH004")], [["#12"], [], [], ["#12"]], "a draft in the inbox too");
-  assert.equal(mergedCandidates(plan, plan.entities.get("TST-GH003")!.entity as Task), undefined, "another repository's PR is never asked for");
+  assert.deepEqual(mergedCandidates(plan, plan.entities.get("TST-GH003")!.entity as Task)?.links, [], "another repository's PR is never asked for");
 });
 
 test("only tasks that never ran, in todo or inbox, are followed; a forge that cannot answer leaves the last reading", async () => {
@@ -115,12 +124,15 @@ test("only tasks that never ran, in todo or inbox, are followed; a forge that ca
     { id: "ERG-PLAIN", project: "site" },
     { id: "ERG-OK001", ...base },
   ]);
-  for (const id of ["ERG-RUN01", "ERG-DONE1", "ERG-NOCRT", "ERG-PLAIN"]) assert.equal(mergedCandidates(plan, plan.entities.get(id)!.entity as Task), undefined, id);
+  for (const id of ["ERG-RUN01", "ERG-DONE1", "ERG-NOCRT"]) assert.equal(mergedCandidates(plan, plan.entities.get(id)!.entity as Task), undefined, id);
+  const plain = mergedCandidates(plan, plan.entities.get("ERG-PLAIN")!.entity as Task);
+  assert.deepEqual([plain?.branch, plain?.links], [undefined, []], "without a branch or links, only its id is looked for");
 
   const mrs: Record<string, Mr[]> = { prj_site: merged };
   const { t } = tracker(plan, forge(mrs));
   await t.checkAll();
-  assert.deepEqual([...t.seen.keys()], ["ERG-OK001"]);
+  assert.deepEqual([...t.seen.keys()], ["ERG-PLAIN", "ERG-OK001"]);
+  assert.deepEqual(t.seen.get("ERG-PLAIN")!.merged, [], "its id is in no merge");
   delete mrs.prj_site; // glab now fails in site
   await t.checkAll();
   assert.equal(t.shown(plan, plan.entities.get("ERG-OK001")!.entity as Task).length, 1, "kept");
@@ -164,7 +176,7 @@ test("the board and the task screen show work merged outside the dashboard; the 
     await s.dashboard.merged.checkAll();
     const board = await readBoard(s.ctx, {});
     const card = board.columns.flatMap((c) => c.tasks).find((t) => t.id === "TST-MRG01")!;
-    assert.deepEqual(card.merged, [{ label: "#975", url: "https://github.com/acme/core/pull/975", merged_at: "2026-11-11T22:12:00Z" }]);
+    assert.deepEqual(card.merged, [{ label: "#975", url: "https://github.com/acme/core/pull/975", merged_at: "2026-11-11T22:12:00Z", branch: "feat/member-roles", by: ["link"] }]);
     assert.equal(board.columns.flatMap((c) => c.tasks).find((t) => t.id === "TST-FX001")!.merged, undefined, "left out when there is none");
     const view = taskView(s.dashboard, { task: "TST-MRG01" });
     assert.deepEqual([view.status, view.merged.map((m) => m.label), view.actions.close], ["todo", ["#975"], true], "Mark done is the person's");

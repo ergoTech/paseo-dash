@@ -7,7 +7,7 @@ import { blockers, localHost, localRun, milestoneOf, prText, tasksOf } from "./a
 import type { SpaceSync } from "./sync/space-sync.ts";
 import { planProblems } from "./plan/load.ts";
 import { unreadCount } from "./events.ts";
-import { flat, needOf, runActivity, SYNC_NEXT } from "./needs.ts";
+import { flat, needOf, runActivity, SYNC_NEXT, waitState } from "./needs.ts";
 
 type Overview = RpcOutput<typeof overviewRpc>;
 
@@ -86,9 +86,9 @@ export function readOverview(dashboard: Dashboard, { space, limit }: RpcInput<ty
     for (const task of tasks.filter(hasLiveRun)) {
       const run = localRun(dashboard.runs, task);
       const needed = needOf(dashboard, task, host);
-      if (needed) need({ task: task.id, title: task.title, why: needed.why, next: needed.next, chat_id: run?.agentId ?? "", kind: needed.kind, space: key }, needed.since);
+      if (needed) need({ task: task.id, title: task.title, why: needed.why, next: needed.next, chat_id: needed.chatId ?? run?.agentId ?? "", kind: needed.kind, space: key }, needed.since);
       if (task.status !== "in_progress") continue;
-      result.running.push({ task: task.id, title: task.title, activity: runActivity(dashboard, task, host), host: task.run_host ?? "", chat_id: run?.agentId ?? "", since: task.run_started ?? "" });
+      result.running.push({ task: task.id, title: task.title, activity: runActivity(dashboard, task, host), state: waitState(dashboard, task, host).state, host: task.run_host ?? "", chat_id: run?.agentId ?? "", since: task.run_started ?? "" });
     }
     const review = tasks.filter((t) => t.status === "review");
     result.counts.review += review.length;

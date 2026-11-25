@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Text, View } from "react-native";
 import { autopilotReadRpc, autopilotSetRpc, tasksNextRpc, tasksStartReadyRpc } from "../shared/ui.ts";
+import { CANDIDATE_GROUPS, startCandidatesRpc } from "../shared/api.ts";
 import { Actions, StartDialog } from "./actions.tsx";
 import { Button, ItemRow, REFRESH_MS, Section, type Styles, Toggle } from "./common.tsx";
 import { useRefresh } from "./forms.tsx";
@@ -115,6 +116,62 @@ export function AutopilotSection({ styles, theme }: { styles: Styles; theme: The
       {a.started.slice(0, 5).map((s) => (
         <ItemRow key={`${s.task}:${s.at}`} glyph="working" title={s.title} note={`started by the autopilot · ${s.task} · ${new Date(s.at).toLocaleString()}`} onPress={() => show.task(s.task, { title: s.title })} theme={theme} styles={styles} />
       ))}
+    </Section>
+  );
+}
+
+/** How Live names each group of start_candidates. */
+const GROUP_TITLES: Record<(typeof CANDIDATE_GROUPS)[number], string> = {
+  agent: "For an agent now",
+  check: "A person says first (label reads like a person's)",
+  decision: "Waits for a decision",
+  qa_environment: "Waits for QA, an environment, a device or access",
+  merged: "Merged already: acceptance left",
+  person: "A person's work",
+  dependencies: "Waits for other tasks",
+  not_here: "Project not on this Mac",
+};
+
+/**
+ * Live's "What can start": this Mac's places (at work, launching, stopped, in review, free, a usage
+ * limit) and the todo tasks grouped by what they wait for, in the board's order. Read only: nothing
+ * here starts a task; each row opens the task, whose screen starts it.
+ */
+export function StartCandidatesSection({ space, styles, theme }: { space?: string; styles: Styles; theme: Theme }) {
+  const read = useRpc(startCandidatesRpc);
+  const show = useShow();
+  const [open, setOpen] = useState<string>("agent");
+  const query = useQuery({ queryKey: ["dashboard", "candidates", space ?? ""], queryFn: () => read({ space: space || undefined, limit: 50 }), refetchInterval: REFRESH_MS });
+  const c = query.data;
+  if (!c) return null;
+  const s = c.slots;
+  const places = s.max
+    ? `${s.active} of ${s.max} places at work${s.launching ? ` (${s.launching} launching)` : ""} · ${s.free} free${s.stopped ? ` · ${s.stopped} stopped, holding none` : ""}${s.review ? ` · ${s.review} in review, holding none` : ""}`
+    : "";
+  return (
+    <Section title={`What can start · ${c.counts.agent ?? 0} for an agent`} styles={styles}>
+      {c.error ? <Text style={styles.error}>{c.error}</Text> : null}
+      {places ? <Text style={styles.muted}>{places}</Text> : null}
+      {s.hold ? <Text style={styles.error}>{s.hold}</Text> : null}
+      <View style={[styles.row, { flexWrap: "wrap" }]}>
+        {CANDIDATE_GROUPS.filter((g) => (c.counts[g] ?? 0) > 0).map((g) => (
+          <Button key={g} label={`${GROUP_TITLES[g]} · ${c.counts[g]}`} ghost={open !== g} onPress={() => setOpen(g)} styles={styles} />
+        ))}
+      </View>
+      {c.tasks
+        .filter((t) => t.group === open)
+        .map((t) => (
+          <ItemRow
+            key={t.id}
+            glyph={t.group === "agent" ? "todo" : t.group === "dependencies" ? "blocked" : "needs_you"}
+            title={`${t.order}. ${t.title}`}
+            note={[t.id, t.reason, t.start_with, t.checked ? `checked ${t.checked}` : t.group === "agent" ? "not checked by a person" : "", t.overlap].filter(Boolean).join(" · ")}
+            onPress={() => show.task(t.id, { title: t.title })}
+            theme={theme}
+            styles={styles}
+          />
+        ))}
+      <Text style={styles.muted}>{c.note}</Text>
     </Section>
   );
 }

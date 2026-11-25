@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Honest states, batches and the way to QA
+
+- Work merged while its task stayed open is found by the task's id too: a merged PR/MR whose title,
+  description or source branch names it (site !412 for ERG-7MRG1, on a branch the plan did not name),
+  or the one the forge says closed the task's issue in its own project. An issue number or a similar
+  title alone never ties one. The board card, the task screen and ChatGPT's `reconcile` show the
+  PR/MR, its merge commit and branch, the acceptance still open and what to do; nothing changes the
+  task by itself. A start of such a task says what was merged and nothing starts it on its own; a
+  start of it alone tells its agent to do only what is left.
+- Projects says when a GitLab project's web host is not the one its forge serves (GitLab's `web_url`
+  for the project), with a button to set it; `start_check` names the host to check when only the host
+  of an issue differs.
+- ChatGPT reads the profiles, models and efforts of up to 50 tasks at once (`tasks_profiles`: the next
+  start's apart from the running agent's) and sets the profiles of up to 25 (`update_tasks`): only the
+  profile changes, each task answers on its own, the revision of the read guards the call, and a retry
+  with the same key applies nothing twice and never undoes a change made in between. `task_text` reads
+  a long brief, acceptance or handoff whole, in parts; `task` stays short and says when its brief is cut.
+- What can start: Live's "What can start" and ChatGPT's `start_candidates` group the todo tasks, in the
+  board's order, by what holds them: for an agent now, a person's work, a decision, other tasks, QA or
+  an environment, merged already, a label that reads like a person's work the space does not mark,
+  not on this Mac; with what each start would use, the day a person checked it, and this Mac's places
+  at work, launching, stopped, in review and free. Reading it starts nothing. Tasks carry `requires`
+  (owner, decision, environment, device, access, QA, each with a reason and a day) and a readiness
+  check, set with `update_task`.
+- Waiting states: an agent idle while a sub-agent of it works (Paseo's child agents, or a sub-agent call
+  on its timeline), while its PR/MR's checks run, or after it reported a wait (task_report
+  `waiting_for`) no fact contradicts, is no longer "needs you: answer"; a sub-agent's question or
+  permission is. `overview.running` and `task` say the state; a stopped run says its PR/MR, handoff
+  and open acceptance, and a lost run record is said apart from an ended run. A turn that ends while a
+  sub-agent works makes no unread event.
+- Delivery: the task screen and ChatGPT's `delivery` show the way from the PR/MR to accepted work: the
+  merge commit, checks, the stage build and whether it holds the merge, flags, access, device, the
+  Trello card and QA's result, the stage it is at and who acts next, with a QA handoff text. Merged is
+  not accepted; passing checks tick no manual check. Paseo Dash has no Trello access: the card is
+  linked, its state is the one recorded, and the handoff is ready to post. `update_task` records these
+  facts with their day.
+- `meta.describe` grows from 17,667 to 21,380 bytes; its ceiling goes from 17.5 to 21.5 KiB.
+
 ### Board
 
 - A task in progress that no run of Paseo Dash holds (set by a session outside the dashboard, a hub's

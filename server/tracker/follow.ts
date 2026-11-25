@@ -417,6 +417,20 @@ export class RunFollower {
     };
   }
 
+  /**
+   * Sub-agent calls of the run's agent still running (Claude's Task tool, Codex's sub-agents), as its
+   * timeline shows them; 0 when the run is not followed. Only calls updated within `freshMs` count:
+   * a call whose last event was missed does not keep a run "busy" for ever.
+   */
+  runningSubAgents(runId: string, freshMs = 30 * 60_000): number {
+    const entry = this.followed.get(runId);
+    if (!entry) return 0;
+    const now = this.time();
+    let running = 0;
+    for (const call of entry.calls.values()) if (call.op === "agent" && call.status === "running" && now - call.at < freshMs) running += 1;
+    return running;
+  }
+
   /** The latest call of a run, without building its changed files; undefined when it is not followed. */
   nowOf(runId: string): RunLive["now"] | undefined {
     const entry = this.followed.get(runId);

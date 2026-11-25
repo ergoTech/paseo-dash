@@ -46,7 +46,7 @@ sequenceDiagram
 
 ## Operations
 
-Twenty-nine operations: fifteen reads, fourteen actions. God Mode keeps at most 40; a small set also keeps the
+Thirty-five operations: twenty reads, fifteen actions. God Mode keeps at most 40; a small set also keeps the
 catalog ChatGPT reads on every call short.
 
 | id | kind | method | risk / asks | target | outcome | untrusted |
@@ -54,6 +54,11 @@ catalog ChatGPT reads on every call short.
 | `overview` | read (main) | `dashboard.overview` | | | `error` | yes |
 | `tasks` | read | `tasks.list` | | | `error` | yes |
 | `task` | read | `tasks.get` | | | `error` | yes |
+| `task_text` | read | `tasks.text` | | | `error` | yes |
+| `delivery` | read | `tasks.delivery` | | | `error` | yes |
+| `reconcile` | read | `tasks.reconcile` | | | `error` | yes |
+| `start_candidates` | read | `tasks.start-candidates` | | | `error` | yes |
+| `tasks_profiles` | read | `tasks.profiles` | | | `error` | yes |
 | `task_result` | read | `tasks.result` | | | `error` | yes |
 | `roadmap` | read | `roadmap.get` | | | `error` | yes |
 | `inbox` | read | `inbox.list` | | | `error` | yes |
@@ -70,6 +75,7 @@ catalog ChatGPT reads on every call short.
 | `add_to_inbox` | action | `inbox.add` | `low`, runs at once | | `ok`, `error` | |
 | `create_task` | action | `tasks.create` | `low`, runs at once | | `ok`, `error` | |
 | `update_task` | action | `tasks.update` | `low`, runs at once | | `ok`, `error` | |
+| `update_tasks` | action | `tasks.update-many` | `low`, runs at once ([below](#batches-and-full-text)) | | `ok`, `error` | |
 | `start_task` | action | `tasks.start` | `outward`, **asks first**; `low`, runs at once, while this machine starts without asking ([below](#starting-without-asking)) | `start_check` → title, project, branch, workspace, profile, mode, instructions, issue (none while it runs at once) | `ok`, `error` | |
 | `start_tasks` | action | `tasks.start-set` | `outward`, **asks first**; `low`, runs at once, while this machine starts without asking | `start_tasks_check` → start_now, after, not_started, agents, instructions (none while it runs at once) | `ok`, `error` | |
 | `resume_task` | action | `autopilot.resume-task` | `outward`, **asks first**, also while this machine starts without asking ([below](#resuming-a-paused-task)) | `resume_check` → title, paused, then | `ok`, `error` | |
@@ -946,6 +952,66 @@ what to do, and its run held the autopilot's place unseen. It is now `checkout`,
 failure), and a release is the way on: a task in progress cannot start again without one
 (`start_task` takes only todo tasks). Work in review is accepted or sent back with `accept_task` and
 `send_back` (JOBBY-5YRRY); an agent's questions are `question` (JOBBY-RTWBY).
+
+### Waiting states
+
+Decided 2026-11-25 (JOBBY-YV2QS). ERG-4WT1N read "needs you: answer" while its agent sat idle and a
+sub-agent it had started ran `go test` and the review. An agent that ended its turn is not by that
+alone waiting for the user. `overview.running[].state` and `task.state` say what a live run waits on
+(`server/needs.ts` `waitState`, from the same facts as `needOf`):
+
+| State | Waits for the user | From |
+| --- | --- | --- |
+| `launching`, `working` | no | the agent's activity |
+| `subagent_working` | no | Paseo's child agents of the run's agent (label `paseo.parent-agent-id`) at work, a sub-agent call running on its timeline, or the agent's `task_report waiting_for: subagent` within 30 minutes |
+| `waiting_for_ci` | no | its own open PR/MR's checks pending or waiting, or `waiting_for: ci` while the checks have not finished |
+| `waiting_for_review` | no | `waiting_for: review` within 30 minutes, or its agent idle in review |
+| `needs_user_question`, `approval` | yes (`question`, `permission`) | the agent's own question or permission, else a child agent's (`chat_id` is the child's) |
+| `answer` | yes | idle with none of the above: the agent finished its turn; `waiting_for: user` says it asks |
+| `blocked` | yes (`answer`) | `task_report state: blocked` |
+| `failed`, `stopped`, `checkout` | yes | as before; `stopped` now says its PR/MR, handoff and open acceptance |
+| `record_lost` | yes (`stopped`) | this Mac holds the run in the plan with no record of its agent: not an ended run |
+| `elsewhere` | no | another machine's run |
+
+A sub-agent at work never hides a question or a permission, the agent's own or a child's. A reported
+wait no fact backs counts for 30 minutes; checks that finished contradict a reported CI wait. A turn
+that ended while a sub-agent works makes no unread event. Nothing closes, restarts or releases a run
+by itself.
+
+### Batches and full text
+
+Decided 2026-11-25 (JOBBY-YV2QS): 107 agent profiles were set one `update_task` and one read-back at a
+time, two after errors, and a brief past 1,200 characters could not be read whole.
+
+- `tasks_profiles` reads up to 50 tasks: each one's profile, the model and effort its next start uses
+  (`next_start`) apart from the agent at work now (`running`), and the set's `revision`.
+- `update_tasks` sets the agent profile of up to 25 tasks and nothing else: no status, order,
+  dependency or run changes, and no agent restarts. It carries the `revision` the read-back showed and
+  an idempotency `key`. The key's checkpoint on this Mac (`batches.json`) holds each item's value
+  before and its result, written before the plan is touched and after. Each item answers `applied`,
+  `already`, `refused` (unknown task or profile, a task named twice, or changed since the read: never
+  overwritten) or `unknown` (queued while the plan syncs). A call with the same key and items applies
+  only what is left; the same key with other items is refused.
+- `task_text` reads one section (brief, acceptance, handoff, clarifications, notes) in parts of 4,000
+  characters with `next_cursor`, `truncated` and the file's `revision`; a part asked against another
+  revision is refused. `task` stays compact and says `brief_chars` when its brief is cut.
+
+### Reconcile, start candidates and delivery
+
+- `reconcile` lists open tasks whose work a merged PR/MR holds (03-model.md, Merged work): the PR/MR,
+  merge commit, source branch, how it was tied, the acceptance still open and the next step; with
+  `task`, it asks that task's forge now. `projects` names a GitLab project whose web host is not the
+  one its forge serves, with the fix. It changes nothing; merged with open acceptance is not done.
+- `start_candidates` groups the todo tasks of the board's order by what holds them (`agent`,
+  `person`, `decision`, `dependencies`, `qa_environment`, `merged`, `check`: a label that reads like a
+  person's work the space does not mark, `not_here`), each with what its next start uses, the day a
+  person checked it (or none), and a known overlap (a shared branch; an empty one is not a check).
+  `slots`: this Mac's places at work, launching, stopped and in review (holding none) and free, and a
+  usage limit's hold. It starts nothing and moves nothing.
+- `delivery` says one task's way from its PR/MR to accepted work: each step's state and fact, the stage
+  (`in_work`, `waiting_for_merge`, `waiting_for_ci`, `waiting_for_stage`, `waiting_for_setup`,
+  `ready_for_qa`, `qa_failed`, `qa_passed`, `accepted`), who acts next (agent, CI, deploy, owner, QA),
+  why Trello cannot be read from here, and a QA handoff text. `task.delivery` has its one line.
 
 ### Actions
 

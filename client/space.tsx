@@ -32,7 +32,7 @@ import { EventsSection } from "./events.tsx";
 import { RecapSection } from "./recap.tsx";
 import { PLUGIN_NAME } from "../shared/edition.ts";
 import { RankButtons } from "./rank.tsx";
-import { AutopilotSection, StartNextButton } from "./queue.tsx";
+import { AutopilotSection, StartCandidatesSection, StartNextButton } from "./queue.tsx";
 import { BoardTab } from "./board.tsx";
 import { SyncControl } from "./sync.tsx";
 import { TopBar } from "./topbar.tsx";
@@ -538,10 +538,10 @@ function LiveTab({ space, spaces, theme, styles, navigation }: { space: string; 
           <View key={r.task} style={styles.row}>
             <View style={{ flex: 1 }}>
               <ItemRow
-                glyph={r.activity === "failed" ? "failed" : r.activity === "waiting" ? "needs_you" : r.activity === "stopped" || !r.chat_id ? "elsewhere" : "working"}
+                glyph={r.activity === "failed" ? "failed" : r.activity === "waiting" && WAITS_FOR_USER.has(r.state) ? "needs_you" : r.activity === "stopped" || !r.chat_id ? "elsewhere" : "working"}
                 space={tag(r.task)}
                 title={r.title}
-                note={[r.activity, r.host, ago(r.since)].filter(Boolean).join(" · ")}
+                note={[STATE_WORDS[r.state] ?? r.activity, r.host, ago(r.since)].filter(Boolean).join(" · ")}
                 active={shows(r.task)}
                 onPress={() => openTask(r.task, r.title)}
                 theme={theme}
@@ -572,6 +572,7 @@ function LiveTab({ space, spaces, theme, styles, navigation }: { space: string; 
       <View style={styles.row}>
         <StartNextButton space={asked} styles={styles} theme={theme} />
       </View>
+      <StartCandidatesSection space={asked} styles={styles} theme={theme} />
       <AutopilotSection styles={styles} theme={theme} />
       <EventsSection space={asked} spaces={Boolean(spaces)} theme={theme} styles={styles} navigation={navigation} />
       <RecapSection space={asked} spaces={Boolean(spaces)} theme={theme} styles={styles} />
@@ -581,6 +582,27 @@ function LiveTab({ space, spaces, theme, styles, navigation }: { space: string; 
     </ScrollView>
   );
 }
+
+/** How the Working list names a run's state (shared/overview.ts WAIT_STATES). */
+const STATE_WORDS: Record<string, string> = {
+  launching: "launching",
+  working: "working",
+  subagent_working: "a sub-agent at work",
+  waiting_for_ci: "waiting for CI",
+  waiting_for_review: "waiting for review",
+  needs_user_question: "asks you a question",
+  approval: "waits for your approval",
+  answer: "waits for your reply",
+  blocked: "blocked: needs you",
+  failed: "failed",
+  stopped: "stopped: no agent at work",
+  record_lost: "no record of its agent here",
+  checkout: "checkout ended",
+  elsewhere: "on another machine",
+};
+
+/** The states that wait for the user: the rest are at work or wait on CI, a review or a sub-agent. */
+const WAITS_FOR_USER = new Set(["needs_user_question", "approval", "answer", "blocked", "failed", "stopped", "record_lost", "checkout"]);
 
 /** The longest answer tasks.send-back takes. */
 const REPLY_MAX = 4000;
