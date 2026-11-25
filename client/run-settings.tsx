@@ -70,7 +70,7 @@ function AutopilotLimit() {
   );
 }
 
-type StartChange = { start_new_tasks?: boolean; start_mode?: string; start_mode_provider?: string; start_effort?: string };
+type StartChange = { start_new_tasks?: boolean; start_mode?: string; start_mode_provider?: string; start_effort?: string; start_auto_model?: boolean };
 
 /**
  * This Mac's start defaults (server/autopilot.ts DEFAULT_START): whether a new ready task starts on its
@@ -91,7 +91,7 @@ function StartDefaults() {
   const a = state.data;
   const o = options.data;
   const pending = saving.isPending ? saving.variables : undefined;
-  const start = a && !a.error ? { ...a.start, ...(pending?.start_new_tasks !== undefined ? { new_tasks: pending.start_new_tasks } : {}), ...(pending?.start_mode ? { mode: pending.start_mode } : {}), ...(pending?.start_effort ? { effort: pending.start_effort } : {}) } : undefined;
+  const start = a && !a.error ? { ...a.start, ...(pending?.start_new_tasks !== undefined ? { new_tasks: pending.start_new_tasks } : {}), ...(pending?.start_mode ? { mode: pending.start_mode } : {}), ...(pending?.start_effort ? { effort: pending.start_effort } : {}), ...(pending?.start_auto_model !== undefined ? { auto_model: pending.start_auto_model } : {}) } : undefined;
   const error = (saving.data && !saving.data.ok ? saving.data.error : "") || (saving.isError ? `Unknown whether it changed: ${String(saving.error)}` : "");
   const listError = o?.error || (options.isError ? String(options.error) : "");
   // A stored id the provider no longer lists stays shown, so the setting never looks changed when it is not.
@@ -123,12 +123,19 @@ function StartDefaults() {
       />
       <SettingsSelect
         label="Effort of every start"
-        hint={`Passed to the agent explicitly, instead of the model's default, unless the agent profile names one or you pick another when starting. A model without it runs with its own default, and the start says so.${o?.provider ? ` Efforts of ${o.provider}.` : ""}`}
+        hint={`Passed to the agent explicitly, instead of the model's default, unless the agent profile names one, Claude's pick per task (below) does, or you pick another when starting. A model without it runs with its own default, and the start says so.${o?.provider ? ` Efforts of ${o.provider}.` : ""}`}
         value={start?.effort ?? ""}
         options={efforts.map((e) => ({ label: e.label, value: e.id }))}
         disabled={disabled || !efforts.length}
         onValueChange={(value) => saving.mutate({ start_effort: value })}
         error={listError || null}
+      />
+      <SettingsSwitch
+        label="Pick Claude's model and effort per task"
+        hint="Where no agent profile applies and the agent is Claude's: Sonnet 5.5 Medium for a short brief with a few acceptance lines, Sonnet 5.5 High for a bigger one, Opus 5.5 High when the task has no acceptance, an open question or more than six acceptance lines, or its title or labels name architecture, more than one repository, a migration, security, research or a spike, an audit, a rewrite or concurrency. The start says which and why; a model or effort you pick when starting wins. A model this Mac does not offer leaves the provider's default. A usage limit never swaps the model: the autopilot waits for the reset. Off: the provider's default model with the effort above."
+        value={start?.auto_model !== false}
+        disabled={disabled}
+        onValueChange={(value) => saving.mutate({ start_auto_model: value })}
       />
     </SettingsCard>
   );

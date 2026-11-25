@@ -136,6 +136,7 @@ export class Runner {
         mode: input.settings.mode,
         ...(input.settings.thinkingOptionId ? { effortId: input.settings.thinkingOptionId } : {}),
         effort: input.settings.effort,
+        ...(input.settings.modelId ? { modelId: input.settings.modelId } : {}),
       },
     };
     this.store.put(run);

@@ -13,6 +13,6 @@ export function runSettingsText(run: Pick<RunRecord, "asked" | "reported">): str
     reported?.effortId && differs(asked?.effortId, reported.effortId) ? `effort ${reported.effortId}` : "",
   ].filter(Boolean);
   if (!asked) return reported ? `Paseo reports ${[reported.modeId ? `mode ${reported.modeId}` : "", reported.effortId ? `effort ${reported.effortId}` : ""].filter(Boolean).join(", ")}` : "";
-  const started = `Started in ${asked.mode} · effort ${asked.effort}`;
+  const started = `Started${asked.modelId ? ` on ${asked.modelId}` : ""} in ${asked.mode} · effort ${asked.effort}`;
   return now.length ? `${started}. Paseo now reports the agent in ${now.join(", ")}` : started;
 }

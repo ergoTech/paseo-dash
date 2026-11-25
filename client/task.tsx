@@ -7,7 +7,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { tasksContinueRpc, tasksSeenRpc } from "../shared/ui.ts";
 import { taskViewRpc } from "../shared/views.ts";
-import { ArchiveWorkspaceDialog, MergeDialog, MoveDialog, ReleaseDialog, type ReleaseTo, StartDialog, StatusDialog, usePrefetchStart } from "./actions.tsx";
+import { ArchiveTasksDialog, ArchiveWorkspaceDialog, MergeDialog, MoveDialog, ReleaseDialog, type ReleaseTo, StartDialog, StatusDialog, usePrefetchStart } from "./actions.tsx";
 import { useChanges } from "./changes.ts";
 import { Button, isWebUrl, ItemRow, Mark, REFRESH_MS, Section, type Styles, useStyles } from "./common.tsx";
 import { TaskForm, useRefresh } from "./forms.tsx";
@@ -250,7 +250,8 @@ type Dialog =
   | { kind: "edit"; accept: boolean }
   | { kind: "merge" }
   | { kind: "move" }
-  | { kind: "archive" };
+  | { kind: "archive" }
+  | { kind: "archive-task"; archived: boolean };
 
 /**
  * The task's actions (04-ux.md, Main flows), as the server says they apply from this machine: a
@@ -258,7 +259,9 @@ type Dialog =
  * live run holds is released with a confirmation naming who holds it; a task in review continues on
  * its run's own machine; a finished one reopens. An open task moves to another release, feature or,
  * until it is first started, another line. A task that never ran whose work was merged outside the
- * dashboard says so first, with "Mark done" (a draft is accepted on the way).
+ * dashboard says so first, with "Mark done" (a draft is accepted on the way). A task in progress that
+ * no live run holds (unheld: set outside the dashboard) is closed, put back to todo or started again by
+ * the person, with its merged work shown the same way. A finished task is archived off the board.
  */
 function TaskActions({
   view: t,
@@ -358,6 +361,12 @@ function TaskActions({
           <Text style={styles.muted}>Merged after the task was created, by work no run of this task did. Its status changes only when you mark it done.</Text>
         </View>
       ) : null}
+      {a.unheld ? (
+        <Text style={styles.muted}>
+          {`In progress, but no run of this dashboard holds it: a session outside the dashboard or an edit of the plan set the status, so nothing moves it by itself. Mark it done, put it back to todo, cancel it, or start a new run.`}
+        </Text>
+      ) : null}
+      {t.archived ? <Text style={styles.muted}>{`Archived ${t.archived}: off the board, still in the plan. The board's Archived filter lists it.`}</Text> : null}
       <View style={[styles.row, { flexWrap: "wrap" }]}>
         {a.triage && merged ? <Button label="Mark done…" onPress={markMerged} styles={styles} /> : null}
         {a.triage ? (
@@ -372,7 +381,7 @@ function TaskActions({
             />
           </>
         ) : null}
-        {t.status === "todo" ? <Button label="Start…" ghost={merged} disabled={Boolean(a.start)} onPress={() => setDialog({ kind: "start" })} styles={styles} /> : null}
+        {t.status === "todo" || a.unheld ? <Button label="Start…" ghost={merged || a.unheld} disabled={Boolean(a.start)} onPress={() => setDialog({ kind: "start" })} styles={styles} /> : null}
         {a.continue ? <Button label="Continue work" disabled={busy} onPress={() => void continueWork()} styles={styles} /> : null}
         {a.release ? (
           <>
@@ -388,6 +397,14 @@ function TaskActions({
             ) : (
               <Button label="Mark done…" ghost onPress={() => setDialog({ kind: "status", to: "done", label: "Mark done", note: "The task is marked done without a run." })} styles={styles} />
             )}
+            {a.unheld ? (
+              <Button
+                label="Back to todo…"
+                ghost
+                onPress={() => setDialog({ kind: "status", to: "todo", label: "Back to todo", note: `The task goes back to todo from ${t.status}; no run held it, so nothing is stopped.` })}
+                styles={styles}
+              />
+            ) : null}
             <Button label="Cancel…" ghost onPress={() => setDialog({ kind: "status", to: "canceled", label: "Cancel task", note: "The task is canceled; its file stays in the plan." })} styles={styles} />
           </>
         ) : null}
@@ -398,12 +415,14 @@ function TaskActions({
         {editable ? <Button label="Move…" ghost onPress={() => setDialog({ kind: "move" })} styles={styles} /> : null}
         {/* Its place among the tasks of its priority waiting to start (D21). */}
         {(t.status === "todo" && !t.run) || t.status === "inbox" ? <RankButtons task={t.id} styles={styles} /> : null}
+        {a.archive_task ? <Button label="Archive" ghost onPress={() => setDialog({ kind: "archive-task", archived: true })} styles={styles} /> : null}
+        {a.unarchive ? <Button label="Unarchive" ghost onPress={() => setDialog({ kind: "archive-task", archived: false })} styles={styles} /> : null}
         {a.archive ? <Button label="Archive workspace…" ghost onPress={() => setDialog({ kind: "archive" })} styles={styles} /> : null}
       </View>
       {t.status === "todo" && !t.run ? <AutopilotToggle space={t.space} task={t.id} styles={styles} theme={theme} /> : null}
       {notice ? <Text style={styles.muted}>{notice}</Text> : null}
-      {t.status === "todo" && a.start ? <Text style={styles.muted}>{`Cannot start from here: ${a.start}.`}</Text> : null}
-      {t.status === "todo" && !a.start && a.blocked_by.length ? (
+      {(t.status === "todo" || a.unheld) && a.start ? <Text style={styles.muted}>{`Cannot start from here: ${a.start}.`}</Text> : null}
+      {(t.status === "todo" || a.unheld) && !a.start && a.blocked_by.length ? (
         <Text style={styles.muted}>
           {"⊘ Waits for "}
           {t.dependencies
@@ -421,6 +440,7 @@ function TaskActions({
       {dialog?.kind === "release" ? <ReleaseDialog task={t.id} to={dialog.to} open onClose={close} styles={styles} /> : null}
       {dialog?.kind === "status" ? <StatusDialog task={t.id} title={t.title} to={dialog.to} label={dialog.label} note={dialog.note} accept={dialog.accept} open onClose={close} styles={styles} /> : null}
       {dialog?.kind === "archive" ? <ArchiveWorkspaceDialog task={t.id} title={t.title} open onClose={close} styles={styles} /> : null}
+      {dialog?.kind === "archive-task" ? <ArchiveTasksDialog tasks={[t.id]} title={t.title} archived={dialog.archived} open onClose={close} styles={styles} /> : null}
       {dialog?.kind === "merge" ? <MergeDialog space={t.space} task={t.id} title={t.title} open onClose={close} styles={styles} theme={theme} /> : null}
       {dialog?.kind === "move" ? (
         <MoveDialog

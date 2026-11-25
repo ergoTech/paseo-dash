@@ -48,7 +48,7 @@ test("a ready task created in Paseo Dash starts once, in Auto with effort High p
     const created = await ready(s);
     assert.equal(created.ok, true, created.error);
     assert.equal(created.start, "queued");
-    assert.match(created.start_note, /starts once in Auto mode \(auto, this Mac's default\), effort High \(high, this Mac's default\)/);
+    assert.match(created.start_note, /starts once on claude-default in Auto mode \(auto, this Mac's default\), effort High \(high, this Mac's default\)/);
     await launched(s, created.id);
     assert.equal(s.task(created.id)?.status, "in_progress");
     assert.deepEqual(
@@ -56,7 +56,7 @@ test("a ready task created in Paseo Dash starts once, in Auto with effort High p
       [["auto", "high"]],
       "High is passed to the agent, not the model's Medium",
     );
-    assert.equal(taskView(s.dashboard, { task: created.id }).run?.settings, "Started in Auto mode (auto, this Mac's default) · effort High (high, this Mac's default)");
+    assert.equal(taskView(s.dashboard, { task: created.id }).run?.settings, "Started on claude-default in Auto mode (auto, this Mac's default) · effort High (high, this Mac's default)");
     // Another pass starts nothing more: the flag was spent by the start.
     await s.dashboard.autopilot!.pass(s.ctx);
     assert.equal(s.fake.agents.size, 1);

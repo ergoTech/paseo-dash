@@ -173,3 +173,22 @@ test("the board and the task screen show work merged outside the dashboard; the 
     s.stop();
   }
 });
+
+test("JOBBY-7QK3T: a task in progress that no run holds is followed like a todo one; a live run's is not", async () => {
+  const merged: Mr[] = [{ iid: 975, state: "merged", merged_at: "2026-11-11T22:12:00Z", branch: "feat/member-roles" }];
+  const base = { project: "site", branch: "feat/member-roles", status: "in_progress" as const };
+  const plan = planOf([
+    { id: "ERG-M09A8", ...base },
+    { id: "ERG-ENDED", ...base, run_id: "r-1", run_branch: "feat/member-roles", run_ended: "2026-11-12T10:00:00Z" },
+    { id: "ERG-LIVE1", ...base, run_id: "r-2", run_branch: "feat/member-roles" },
+    { id: "ERG-REVW1", ...base, status: "review" },
+  ]);
+  const candidate = (id: string) => mergedCandidates(plan, plan.entities.get(id)!.entity as Task);
+  assert.notEqual(candidate("ERG-M09A8"), undefined);
+  assert.notEqual(candidate("ERG-ENDED"), undefined, "its run ended: nothing follows its PR/MR any more");
+  assert.equal(candidate("ERG-LIVE1"), undefined, "its live run's PR/MR is followed");
+  assert.equal(candidate("ERG-REVW1"), undefined, "review with no run stays the owner's to accept");
+  const { t } = tracker(plan, forge({ prj_site: merged }));
+  await t.checkAll();
+  assert.deepEqual(t.shown(plan, plan.entities.get("ERG-M09A8")!.entity as Task).map((pr) => pr.label), ["!975"]);
+});

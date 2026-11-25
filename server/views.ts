@@ -1,6 +1,6 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { runSettingsText } from "./runner/run-settings.ts";
-import { hasLiveRun, lineLocked, refId, type Task } from "../shared/model.ts";
+import { closed, hasLiveRun, isArchived, lineLocked, refId, startable, type Task, unheld } from "../shared/model.ts";
 import type { uiOptionsRpc, uiRoadmapRpc, uiRunsRpc } from "../shared/ui.ts";
 import { renderRoadmap } from "./plan/roadmap.ts";
 import type { featureViewRpc, taskCodeMapRpc, taskRunsRpc, taskViewRpc } from "../shared/views.ts";
@@ -78,7 +78,22 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
     clarifications: "",
     instructions_hash: "",
     merged: [],
-    actions: { start: "", blocked_by: [], release: false, continue: false, landed_done: false, close: false, reopen: false, triage: false, line: "", archive: false },
+    archived: "",
+    actions: {
+      start: "",
+      blocked_by: [],
+      release: false,
+      continue: false,
+      landed_done: false,
+      close: false,
+      unheld: false,
+      reopen: false,
+      triage: false,
+      line: "",
+      archive: false,
+      archive_task: false,
+      unarchive: false,
+    },
     error: "",
   };
   if (!dashboard.owner && dashboard.ownerReason) return { ...empty, error: dashboard.ownerReason };
@@ -163,17 +178,21 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
     clarifications: loaded.clarifications ?? "",
     instructions_hash: hashText(taskInstructions(loaded.brief, loaded.acceptance.map((a) => a.text), loaded.handoff?.text, loaded.clarifications)),
     merged: dashboard.owner ? dashboard.merged.peekTask({ sync: entry.sync, mapping: entry.record.mapping }, task) : [],
+    archived: isArchived(task) ? spokenTime(task.archived, now) : "",
     actions: {
       start: startReason(task, entry.record.mapping, now),
-      blocked_by: task.status === "todo" ? blockers(plan, task) : [],
+      blocked_by: startable(task) ? blockers(plan, task) : [],
       release: live,
       continue: live && task.status === "review" && Boolean(run),
       landed_done: live && Boolean(landed?.landed && landed.archived && !landed.error),
-      close: !live && task.status === "todo",
-      reopen: !live && (task.status === "done" || task.status === "canceled"),
+      close: !live && (task.status === "todo" || unheld(task)),
+      unheld: unheld(task),
+      reopen: !live && closed(task),
       triage: task.status === "inbox",
       line: lineLocked(task),
-      archive: !live && (task.status === "done" || task.status === "canceled") && leftWorkspaces(dashboard, task.id).length > 0,
+      archive: !live && closed(task) && leftWorkspaces(dashboard, task.id).length > 0,
+      archive_task: closed(task) && !isArchived(task),
+      unarchive: isArchived(task),
     },
     error: "",
   };
@@ -220,7 +239,7 @@ export async function taskRuns(dashboard: Dashboard, input: RpcInput<typeof task
 /** Why the task cannot start from this machine, from the index alone; the start check says the rest. */
 function startReason(task: Task, mapping: Record<string, string | null>, now: Date): string {
   if (hasLiveRun(task)) return `started by ${task.run_by ?? "someone"} on ${task.run_host ?? "another machine"} since ${spokenTime(task.run_started, now)}`;
-  if (task.status !== "todo") return `it is ${task.status}; only a todo task starts`;
+  if (!startable(task)) return `it is ${task.status}; only a todo task starts`;
   if (!task.project) return "it has no project";
   if (!mapping[task.project]) return `project ${task.project} is not mapped on this Mac`;
   return "";
@@ -234,7 +253,7 @@ type FeatureView = RpcOutput<typeof featureViewRpc>;
  * not have) puts what is left in a last phase.
  */
 export function featureView(dashboard: Dashboard, input: RpcInput<typeof featureViewRpc>): FeatureView {
-  const empty: FeatureView = { found: false, space: "", id: input.feature, title: "", status: "", branch: "", milestone: "", done: 0, total: 0, phases: [], missing: [], error: "" };
+  const empty: FeatureView = { found: false, space: "", id: input.feature, title: "", status: "", branch: "", milestone: "", done: 0, total: 0, finished: 0, phases: [], missing: [], error: "" };
   if (!dashboard.owner && dashboard.ownerReason) return { ...empty, error: dashboard.ownerReason };
   const found = locate(dashboard, input.feature);
   if (!found || found.loaded.entity.type !== "feature") return { ...empty, error: `No feature ${input.feature}.` };
@@ -285,6 +304,7 @@ export function featureView(dashboard: Dashboard, input: RpcInput<typeof feature
     milestone: feature.type === "feature" ? (plan.entities.get(refId(feature.milestone) ?? "")?.entity.title ?? "") : "",
     done: own.filter((t) => t.status === "done").length,
     total: own.length,
+    finished: tasksOf(plan).filter((t) => refId(t.feature) === feature.id && closed(t) && !isArchived(t)).length,
     phases: phases.filter(Boolean),
     missing: planned.filter((p) => !own.some((t) => t.project === p)),
     error: "",

@@ -18,6 +18,8 @@ const profile = z.string().trim().min(1).optional();
 const mode = z.string().trim().min(1).max(100).optional();
 /** One of the chosen model's efforts (thinking options), picked in the start confirmation. */
 const effort = z.string().trim().min(1).max(100).optional();
+/** One of the chosen provider's models (an id Paseo lists), picked in the start confirmation. */
+const model = z.string().trim().min(1).max(200).optional();
 
 export const DIFF_OPS = ["+", "-", " ", "…"] as const;
 
@@ -37,6 +39,7 @@ export const uiStartCheckRpc = defineRpc({
     profile,
     mode,
     effort,
+    model,
     /** Check the rest of the start past the tasks it waits for, as "Start anyway" would. */
     anyway: z.boolean().default(false),
     branch: branchChoice,
@@ -57,6 +60,15 @@ export const uiStartCheckRpc = defineRpc({
     effort: z.string(),
     effort_id: z.string(),
     efforts: z.array(z.object({ id: z.string(), label: z.string() })),
+    /**
+     * The model and where it comes from (for a pick per task, why); the model id the start would pass;
+     * the models to pick from instead (the policy's, the provider's default and this one).
+     */
+    model: z.string(),
+    model_id: z.string(),
+    models: z.array(z.object({ id: z.string(), label: z.string() })),
+    /** The agent profiles on this Mac, by name, to start with one of them instead. */
+    profiles: z.array(z.string()),
     /** One sentence for all parts, as God Mode's confirmation reads it. */
     instructions: z.string(),
     /** Whether the task's forge issue closes when its PR/MR merges, and why not; empty without an issue. */
@@ -115,6 +127,7 @@ export const uiStartRpc = defineRpc({
     profile,
     mode,
     effort,
+    model,
     /** "Start anyway": the ids of the blocking tasks the confirmation showed; any other blocker refuses. */
     start_past: z.array(z.string().trim().min(1)).max(20).default([]),
     /** What the person chose for an existing branch the confirmation showed. */
@@ -159,6 +172,34 @@ export const tasksRankRpc = defineRpc({
   name: "tasks.rank",
   input: z.object({ task: taskId, position: z.enum(["top", "bottom", "up", "down", "before", "after"]), next_to: z.string().trim().min(1).max(200).optional() }),
   output: z.object({ ok: z.boolean(), id: z.string(), changed: z.number().int(), error: z.string() }),
+});
+
+/** The most tasks one archive names. */
+export const ARCHIVE_MAX = 500;
+
+/**
+ * Takes done and canceled tasks off the board, or puts them back (03-model.md, Archive): the tasks
+ * named, or every finished task not archived yet of a feature, of a space, or of every space. The plan
+ * file, its run, branch and PR/MR stay; an open task is refused.
+ */
+export const tasksArchiveRpc = defineRpc({
+  name: "tasks.archive",
+  input: z
+    .object({
+      archived: z.boolean().describe("true archives, false puts back on the board"),
+      tasks: z.array(taskId).min(1).max(ARCHIVE_MAX).optional(),
+      /** Every done or canceled task of this feature, else of this space, else of every space (archiving only). */
+      finished_of: z.object({ space: z.string().trim().min(1).optional(), feature: z.string().trim().min(1).optional() }).optional(),
+    })
+    .refine((input) => Boolean(input.tasks) !== Boolean(input.finished_of), "name the tasks, or finished_of, not both"),
+  output: z.object({
+    ok: z.boolean(),
+    /** The tasks this changed. */
+    changed: z.array(z.string()),
+    /** Tasks named that were not changed, each with why: "ERG-7K3QX is todo; only a done or canceled task is archived". */
+    refused: z.array(z.string()),
+    error: z.string(),
+  }),
 });
 
 /** "Archive workspace" (D23): the workspaces this Mac's ended runs of the task left, never a tracked one. */
@@ -441,8 +482,9 @@ export const autopilotReadRpc = defineRpc({
     /**
      * This Mac's start defaults (server/autopilot.ts DEFAULT_START): whether a new ready task asks the
      * autopilot to start it, and the mode and effort ids every start passes when nothing more specific names one.
+     * `auto_model`: Claude's model and effort are picked per task where no profile names them (server/runner/model-policy.ts).
      */
-    start: z.object({ new_tasks: z.boolean(), mode: z.string(), mode_provider: z.string(), effort: z.string() }),
+    start: z.object({ new_tasks: z.boolean(), mode: z.string(), mode_provider: z.string(), effort: z.string(), auto_model: z.boolean() }),
     error: z.string(),
   }),
 });
@@ -483,6 +525,8 @@ export const autopilotSetRpc = defineRpc({
     start_mode: z.string().trim().min(1).max(100).optional(),
     start_mode_provider: z.string().trim().min(1).max(100).optional(),
     start_effort: z.string().trim().min(1).max(100).optional(),
+    /** Pick Claude's model and effort per task where no profile names them. */
+    start_auto_model: z.boolean().optional(),
   }),
   output: z.object({ ok: z.boolean(), error: z.string() }),
 });

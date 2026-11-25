@@ -1,4 +1,5 @@
 import type { PaseoApi } from "../paseo.ts";
+import { POLICY_PROVIDER, type PolicyPick, TIER_SETTINGS } from "./model-policy.ts";
 
 /**
  * Agent settings for a start (05-architecture.md, What a start sends): the task's profile, else the
@@ -13,6 +14,11 @@ import type { PaseoApi } from "../paseo.ts";
  * profile's, else this Mac's start default (where the model has it), else the model's declared
  * default, passed explicitly so the agent runs with the effort the start showed. A Mac default the
  * provider or model lacks is said in the text, never dropped silently.
+ *
+ * The model is the one picked at the start, else the profile's, else, where no profile applies and
+ * this Mac's provider is Claude, the one the task's policy picks (server/runner/model-policy.ts) with
+ * its effort just below the profile's, else the provider's default model. A policy model Paseo does
+ * not offer here leaves the provider's default model and the efforts below the policy, and says so.
  */
 
 /** A provider's mode as the start confirmation offers it; `asks` when it stops for the user. */
@@ -33,9 +39,16 @@ export interface EffortOption {
   label: string;
 }
 
+/** One of the provider's models, as the start confirmation offers it. */
+export interface ModelOption {
+  id: string;
+  label: string;
+}
+
 /** The fields of a model in `providers.listModels` a start uses. */
 interface ModelEntry {
   id: string;
+  label?: string;
   aliases?: string[];
   isDefault?: boolean;
   isSelectable?: boolean;
@@ -72,6 +85,14 @@ export interface AgentSettings {
   effort: string;
   /** The model's efforts, for picking another at the start; empty when Paseo did not list them. */
   efforts: EffortOption[];
+  /** The model id the start passes (the part after `provider/`). */
+  modelId: string;
+  /** The model and where it comes from, as a person hears it: "Sonnet 5.5 (claude-sonnet-5-5, picked for the task: …)". */
+  model: string;
+  /** Models to pick another at the start: the policy's, the provider's default and the chosen one; empty when Paseo did not list them. */
+  models: ModelOption[];
+  /** The agent profiles on this Mac, by name, for picking one at the start. */
+  profiles: string[];
 }
 
 export type ProfileChoice = { ok: true; settings: AgentSettings } | { ok: false; error: string };
@@ -129,26 +150,50 @@ export class Profiles {
    */
   async choose(
     paseo: PaseoApi,
-    levels: { asked?: string; task?: string; space?: string; mode?: { asked?: string; space?: string; mac?: MacMode }; effort?: string; macEffort?: string },
+    levels: {
+      asked?: string;
+      task?: string;
+      space?: string;
+      mode?: { asked?: string; space?: string; mac?: MacMode };
+      effort?: string;
+      macEffort?: string;
+      /** A model id picked at the start: one of the chosen provider's. */
+      model?: string;
+      /** The task's pick (server/runner/model-policy.ts); absent when this Mac turned the policy off. */
+      policy?: PolicyPick;
+    },
   ): Promise<ProfileChoice> {
     const { profiles, firstProvider } = await this.load(paseo);
     const find = (name: string) => profiles.find((p) => p.name.toLowerCase() === name.trim().toLowerCase());
+    const names = profiles.map((p) => p.name);
+    const model = { asked: levels.model };
     if (levels.asked) {
       const found = find(levels.asked);
-      if (!found) return { ok: false, error: `There is no agent profile «${levels.asked}» on this Mac${profiles.length ? `; profiles: ${profiles.map((p) => p.name).join(", ")}` : ""}.` };
-      return this.settings(paseo, found, `${found.name} (asked for)`, levels.mode, levels.effort, levels.macEffort);
+      if (!found) return { ok: false, error: `There is no agent profile «${levels.asked}» on this Mac${profiles.length ? `; profiles: ${names.join(", ")}` : ""}.` };
+      return this.settings(paseo, found, `${found.name} (asked for)`, levels.mode, levels.effort, levels.macEffort, model, names);
     }
     for (const [name, where] of [
       [levels.task, "the task's"],
       [levels.space, "the space's"],
     ] as const) {
       const found = name ? find(name) : undefined;
-      if (found) return this.settings(paseo, found, `${found.name} (${where})`, levels.mode, levels.effort, levels.macEffort);
+      if (found) return this.settings(paseo, found, `${found.name} (${where})`, levels.mode, levels.effort, levels.macEffort, model, names);
     }
     if (!firstProvider) return { ok: false, error: "No agent provider is available on this Mac." };
     const skipped = [levels.task, levels.space].filter(Boolean);
     const note = skipped.length ? `; ${skipped.map((n) => `«${n}»`).join(" and ")} not on this Mac` : "";
-    return this.settings(paseo, { id: "", name: firstProvider, provider: firstProvider }, `${firstProvider} with its defaults (this Mac's${note})`, levels.mode, levels.effort, levels.macEffort);
+    // Only where no profile applies: a profile a person set names its own model and effort.
+    const policy = firstProvider === POLICY_PROVIDER ? levels.policy : undefined;
+    return this.settings(
+      paseo,
+      { id: "", name: firstProvider, provider: firstProvider },
+      `${firstProvider} with its defaults (this Mac's${note})`,
+      levels.mode,
+      levels.effort,
+      levels.macEffort,
+      { ...model, policy },
+      names,
+    );
   }
 
   /**
@@ -193,20 +238,15 @@ export class Profiles {
     wanted: { asked?: string; space?: string; mac?: MacMode } = {},
     effortAsked?: string,
     macEffort?: string,
+    modelWanted: { asked?: string; policy?: PolicyPick } = {},
+    profiles: string[] = [],
   ): Promise<ProfileChoice> {
-    let model = profile.model;
-    let models: ModelEntry[] | { error: string };
-    if (!model) {
-      models = await this.listModels(paseo, profile.provider);
-      model = (models.find((m) => m.isDefault) ?? models.find((m) => m.isSelectable !== false))?.id;
-      if (!model) return { ok: false, error: `The provider ${profile.provider} offers no model on this Mac.` };
-    } else {
-      // The profile names its model: a list that cannot be read only leaves the effort unchecked.
-      models = await this.listModels(paseo, profile.provider).catch((error) => ({ error: String((error as Error)?.message ?? error) }));
-    }
+    const picked = await this.model(paseo, profile, modelWanted);
+    if ("error" in picked) return { ok: false, error: picked.error };
+    const { id: model, models } = picked;
     const mode = await this.mode(paseo, profile, wanted);
     if ("error" in mode) return { ok: false, error: mode.error };
-    const effort = this.effort(profile, model, models, effortAsked, macEffort);
+    const effort = this.effort(profile, model, models, effortAsked, macEffort, picked.effort);
     if ("error" in effort) return { ok: false, error: effort.error };
     return {
       ok: true,
@@ -221,8 +261,66 @@ export class Profiles {
         asks: mode.asks,
         effort: effort.text,
         efforts: effort.efforts,
+        modelId: model,
+        model: picked.text,
+        models: picked.options,
+        profiles,
       },
     };
+  }
+
+  /**
+   * The model picked at the start (it must be one of the provider's), else the profile's, else the
+   * policy's when Paseo offers it here, else the provider's default. Without a model named, the start
+   * needs the list and fails as before when it cannot be read; a picked or profile model is passed
+   * unchecked then, and said so.
+   */
+  private async model(
+    paseo: PaseoApi,
+    profile: AgentProfile,
+    wanted: { asked?: string; policy?: PolicyPick },
+  ): Promise<{ id: string; text: string; options: ModelOption[]; models: ModelEntry[] | { error: string }; effort?: { id: string; where: string } } | { error: string }> {
+    const named = wanted.asked ?? profile.model;
+    const models: ModelEntry[] | { error: string } = named
+      ? await this.listModels(paseo, profile.provider).catch((error) => ({ error: String((error as Error)?.message ?? error) }))
+      : await this.listModels(paseo, profile.provider);
+    const listed = Array.isArray(models) ? models : [];
+    const usable = listed.filter((m) => m.isSelectable !== false);
+    const listedAs = (id: string) => listed.find((m) => m.id === id || m.aliases?.includes(id));
+    const entryOf = (id: string) => usable.find((m) => m.id === id || m.aliases?.includes(id));
+    // As before the policy: the declared default even when Paseo marks it not selectable.
+    const fallback = listed.find((m) => m.isDefault) ?? usable[0];
+    const spoken = (id: string, where: string) => {
+      const label = listedAs(id)?.label;
+      return label && label !== id ? `${label} (${id}, ${where})` : `${id} (${where})`;
+    };
+    // Few chips, not the provider's whole catalogue: what the policy picks from, the default and the chosen one.
+    const options = (chosen: string): ModelOption[] => {
+      const ids = [...new Set([chosen, ...(profile.provider === POLICY_PROVIDER ? Object.values(TIER_SETTINGS).map((tier) => tier.model) : []), fallback?.id])];
+      return ids.flatMap((id) => {
+        const entry = id ? (id === chosen || id === fallback?.id ? listedAs(id) : entryOf(id)) : undefined;
+        return entry ? [{ id: entry.id, label: entry.label || entry.id }] : [];
+      });
+    };
+    const answer = (id: string, text: string, effort?: { id: string; where: string }) => ({ id, text, options: options(id), models, ...(effort ? { effort } : {}) });
+    if (wanted.asked) {
+      // Picked from this provider's list in the confirmation; anything else is refused, not guessed.
+      if (Array.isArray(models) && !entryOf(wanted.asked)) {
+        return { error: `${profile.provider} offers no model «${wanted.asked}» on this Mac; its models: ${usable.map((m) => m.id).join(", ")}.` };
+      }
+      return answer(wanted.asked, Array.isArray(models) ? spoken(wanted.asked, "picked") : `${wanted.asked} (picked; the models could not be read: ${models.error})`);
+    }
+    if (profile.model) {
+      return answer(profile.model, Array.isArray(models) ? spoken(profile.model, "the profile's") : `${profile.model} (the profile's)`);
+    }
+    if (!fallback) return { error: `The provider ${profile.provider} offers no model on this Mac.` };
+    const policy = wanted.policy;
+    if (policy) {
+      const entry = entryOf(policy.model);
+      if (entry) return answer(entry.id, spoken(entry.id, `picked for the task: ${policy.reason}`), { id: policy.effort, where: "picked for the task" });
+      return answer(fallback.id, `${spoken(fallback.id, "the provider's default")}; the task's pick ${policy.model} is not offered on this Mac`);
+    }
+    return answer(fallback.id, spoken(fallback.id, "the provider's default"));
   }
 
   /**
@@ -237,6 +335,7 @@ export class Profiles {
     models: ModelEntry[] | { error: string },
     asked: string | undefined,
     mac?: string,
+    policy?: { id: string; where: string },
   ): { id?: string; text: string; efforts: EffortOption[] } | { error: string } {
     if (!Array.isArray(models)) {
       if (asked) return { id: asked, text: `${asked} (picked)`, efforts: [] };
@@ -256,9 +355,12 @@ export class Profiles {
       return { id: asked, text: spoken(asked, "picked"), efforts };
     }
     if (profile.thinkingOptionId) return { id: profile.thinkingOptionId, text: spoken(profile.thinkingOptionId, "the profile's"), efforts };
-    if (mac && efforts.some((e) => e.id === mac)) return { id: mac, text: spoken(mac, MAC_DEFAULT), efforts };
+    // The policy picked the model with its effort: it goes before this Mac's default, which is one for every task.
+    if (policy && efforts.some((e) => e.id === policy.id)) return { id: policy.id, text: spoken(policy.id, policy.where), efforts };
+    const unpicked = policy ? `; the task's pick «${policy.id}» is not one of ${model}'s efforts` : "";
+    if (mac && efforts.some((e) => e.id === mac)) return { id: mac, text: `${spoken(mac, MAC_DEFAULT)}${unpicked}`, efforts };
     // This Mac's default is said where it does not apply: the effort shown is never a silent swap.
-    const missed = mac ? `; ${MAC_DEFAULT} «${mac}» is not one of ${model}'s efforts` : "";
+    const missed = `${unpicked}${mac ? `; ${MAC_DEFAULT} «${mac}» is not one of ${model}'s efforts` : ""}`;
     const declared = entry?.defaultThinkingOptionId ?? entry?.thinkingOptions?.find((o) => o.isDefault)?.id;
     if (declared) return { id: declared, text: `${spoken(declared, "the model's default")}${missed}`, efforts };
     return { text: `${entry ? `the provider's own; ${model} declares no default effort` : `the provider's own; Paseo lists no model ${model}`}${missed}`, efforts };

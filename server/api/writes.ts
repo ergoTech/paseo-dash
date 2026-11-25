@@ -11,9 +11,9 @@ import type {
   tasksStartRpc,
   tasksUpdateRpc,
 } from "../../shared/api.ts";
-import type { tasksArchiveWorkspaceRpc, tasksContinueRpc, tasksRankRpc, tasksSeenRpc, uiMoveRpc } from "../../shared/ui.ts";
+import type { tasksArchiveRpc, tasksArchiveWorkspaceRpc, tasksContinueRpc, tasksRankRpc, tasksSeenRpc, uiMoveRpc } from "../../shared/ui.ts";
 import { leftWorkspaces } from "../views.ts";
-import { type Entity, type EntityType, type Feature, hasLiveRun, lineLocked, type Milestone, refId, type Task } from "../../shared/model.ts";
+import { closed, type Entity, type EntityType, type Feature, hasLiveRun, lineLocked, type Milestone, refId, type Task, unheld } from "../../shared/model.ts";
 import { briefHash, clarificationEntry, isLastClarification, taskBody } from "../plan/document.ts";
 import { newId, opaqueId } from "../plan/ids.ts";
 import { SAFE_BRANCH } from "../sync/git.ts";
@@ -28,6 +28,7 @@ import {
   resolveEntity,
   resolvePerson,
   resolveProject,
+  resolveSpaces,
   type Resolved,
   type SpaceEntry,
   wikilink,
@@ -530,6 +531,26 @@ export async function updateTask(ctx: WriteContext, input: RpcInput<typeof tasks
     return fail(`«${task.title}» (${task.id}): duplicate_of goes with status canceled, since merging cancels the duplicate. Nothing was changed.`, task);
   }
 
+  // A profile is named as this Mac's Paseo has it, so a typo is refused here and not at the task's start.
+  const asked = input.agent_profile?.trim();
+  let profile: string | null | undefined;
+  if (asked !== undefined) {
+    if (!asked) profile = null;
+    else {
+      const paseo = ctx.dashboard.paseo;
+      if (!paseo) return fail("Paseo is not connected yet; try again in a moment. Nothing was changed.", task);
+      let known: { name: string }[];
+      try {
+        known = (await ctx.dashboard.profiles.load(paseo)).profiles;
+      } catch (error) {
+        return fail(`The agent profiles of this Mac could not be read: ${error instanceof Error ? error.message : String(error)}. Nothing was changed.`, task);
+      }
+      const found = known.find(({ name }) => name.toLowerCase() === asked.toLowerCase());
+      if (!found) return fail(`There is no agent profile «${asked}» on this Mac${known.length ? `; profiles: ${known.map(({ name }) => name).join(", ")}` : ""}. Nothing was changed.`, task);
+      profile = found.name;
+    }
+  }
+
   const accepting = task.status === "inbox" && input.status === "todo";
   const wanted: Record<string, unknown> = {
     title: input.title,
@@ -544,6 +565,8 @@ export async function updateTask(ctx: WriteContext, input: RpcInput<typeof tasks
     duplicate_of: duplicate?.ok && refId(duplicate.value[0]) !== refId(task.duplicate_of) ? duplicate.value[0] : undefined,
     // "" takes the link off: null removes the field (03-model.md).
     issue: issue?.ok ? (issue.value ?? null) : undefined,
+    // null takes the field off: the policy and the defaults decide again.
+    agent_profile: profile,
   };
   const { ops, fields } = changes(task, wanted);
   // One operation per label, so labels added or removed on two machines both land (I2).
@@ -852,7 +875,7 @@ export async function releaseTask(ctx: WriteContext, input: RpcInput<typeof task
   const found = resolveEntity([...ctx.dashboard.spaces.values()], "task", input.task);
   if (!found.ok) return fail(found.error);
   const { entity: task, space } = found.value;
-  if (!hasLiveRun(task)) return fail(`«${task.title}» (${task.id}) is ${task.status} and has no live run; nothing to release.`, task);
+  if (!hasLiveRun(task)) return fail(`«${task.title}» (${task.id}) is ${task.status} and has no live run; nothing to release.${unheld(task) ? " Change its status with update_task (todo, done or canceled)." : ""}`, task);
   const now = (ctx.now ?? (() => new Date()))();
   const op: Operation = { op_id: opaqueId("op"), kind: "release", id: task.id, run_id: task.run_id!, to: input.to, at: now.toISOString() };
   const run = localRun(ctx.dashboard.runs, task);
@@ -941,6 +964,74 @@ export async function continueTask(ctx: WriteContext, input: RpcInput<typeof tas
   const reason = refusal((await record(ctx, space, [op])).get(op.op_id));
   if (reason) return fail(reason, task);
   return { ok: true, id: task.id, status: "in_progress", error: "" };
+}
+
+// ---------------------------------------------------------------- tasks.archive
+
+type TaskArchive = RpcOutput<typeof tasksArchiveRpc>;
+
+/**
+ * Archives done and canceled tasks, or puts them back on the board (03-model.md, Archive): one
+ * operation per task, recorded per space, so each space's tasks land in one commit. An open task is
+ * refused here and again when the operation applies (another machine may have reopened it meanwhile).
+ */
+export async function archiveTasks(ctx: WriteContext, input: RpcInput<typeof tasksArchiveRpc>): Promise<TaskArchive> {
+  const fail = (error: string, refused: string[] = []): TaskArchive => ({ ok: false, changed: [], refused, error });
+  const owner = ownerError(ctx);
+  if (owner) return fail(owner);
+  const spaces = [...ctx.dashboard.spaces.values()];
+  const targets: { space: SpaceEntry; task: Task }[] = [];
+  const refused: string[] = [];
+  if (input.tasks) {
+    for (const id of new Set(input.tasks.map((asked) => asked.trim().toUpperCase()))) {
+      const space = spaces.find((entry) => entry.sync.plan.entities.get(id)?.entity.type === "task");
+      if (!space) refused.push(`${id} is not a task here`);
+      else targets.push({ space, task: space.sync.plan.entities.get(id)!.entity as Task });
+    }
+  } else {
+    if (!input.archived) return fail("Name the tasks to put back on the board.");
+    const scope = input.finished_of ?? {};
+    let within: SpaceEntry[];
+    let feature: string | undefined;
+    if (scope.feature) {
+      const found = resolveEntity(scope.space ? spaces.filter((s) => s.record.key.toLowerCase() === scope.space!.toLowerCase()) : spaces, "feature", scope.feature);
+      if (!found.ok) return fail(found.error);
+      within = [found.value.space];
+      feature = found.value.entity.id;
+    } else {
+      const found = resolveSpaces(ctx.dashboard, scope.space);
+      if (!found.ok) return fail(found.error);
+      within = found.value;
+    }
+    for (const space of within) {
+      for (const task of tasksOf(space.sync.plan)) {
+        if (closed(task) && !task.archived && (!feature || refId(task.feature) === feature)) targets.push({ space, task });
+      }
+    }
+  }
+  const now = (ctx.now ?? (() => new Date()))().toISOString();
+  const bySpace = new Map<SpaceEntry, { op: Operation; id: string }[]>();
+  for (const { space, task } of targets) {
+    if (input.archived && !closed(task)) {
+      refused.push(`${task.id} is ${task.status}; only a done or canceled task is archived`);
+      continue;
+    }
+    if (Boolean(task.archived) === input.archived) continue;
+    const ops = bySpace.get(space) ?? [];
+    ops.push({ id: task.id, op: { op_id: opaqueId("op"), kind: "archive", id: task.id, archived: input.archived, at: now } });
+    bySpace.set(space, ops);
+  }
+  const changed: string[] = [];
+  for (const [space, ops] of bySpace) {
+    const outcomes = await record(ctx, space, ops.map((o) => o.op));
+    for (const { op, id } of ops) {
+      const reason = refusal(outcomes.get(op.op_id));
+      if (reason) refused.push(`${id}: ${reason}`);
+      else changed.push(id);
+    }
+  }
+  const error = refused.length ? `${refused.length} not ${input.archived ? "archived" : "put back"}: ${refused.slice(0, 5).join("; ")}${refused.length > 5 ? "; …" : ""}` : "";
+  return { ok: refused.length === 0, changed, refused, error };
 }
 
 // ---------------------------------------------------------------- tasks.seen

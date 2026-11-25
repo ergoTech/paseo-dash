@@ -9,6 +9,7 @@ import {
   addToInbox,
   continueTask,
   rankTask,
+  archiveTasks,
   archiveWorkspace,
   createFeature,
   createMilestone,
@@ -39,7 +40,7 @@ import { godModeSettingsRpc, godModeSettingsSetRpc } from "./shared/godmode.ts";
 import { readPlanToolsSettings, writePlanToolsSettings } from "./server/plan-tools-settings.ts";
 import { planToolsSettingsRpc, planToolsSettingsSetRpc } from "./shared/plan-tools.ts";
 import { openPlanTools } from "./server/agent-tools/plan-hook.ts";
-import { listSpaces } from "./server/spaces/list.ts";
+import { listSpaces, syncAnswer } from "./server/spaces/list.ts";
 import { localProjects } from "./server/spaces/local.ts";
 import { createGithubRepo, GITHUB_REPO } from "./server/spaces/github.ts";
 import { availablePlans } from "./server/spaces/discover.ts";
@@ -104,6 +105,7 @@ import {
   autopilotStartOptionsRpc,
   tasksNextRpc,
   tasksStartReadyRpc,
+  tasksArchiveRpc,
   tasksArchiveWorkspaceRpc,
   tasksSeenRpc,
   tasksSendBackRpc,
@@ -229,8 +231,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uiTasksCreateRpc, started((input) => createTask(ctx, input, "dashboard")));
   server.handle(
     uiStartRpc,
-    started(({ task, profile, mode, effort, start_past, seen, clarification, shown, branch }) =>
-      startTask(ctx, { task, profile }, { startPast: start_past, seen, mode, effort, clarification, shown, branch }),
+    started(({ task, profile, mode, effort, model, start_past, seen, clarification, shown, branch }) =>
+      startTask(ctx, { task, profile }, { startPast: start_past, seen, mode, effort, model, clarification, shown, branch }),
     ),
   );
   server.handle(tasksContinueRpc, started((input) => continueTask(ctx, input)));
@@ -243,6 +245,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(resumeCheckRpc, started((input) => resumeCheck(ctx, input)));
   server.handle(resumeTaskRpc, started((input) => resumeTask(ctx, input)));
   server.handle(tasksArchiveWorkspaceRpc, started((input) => archiveWorkspace(ctx, input)));
+  server.handle(tasksArchiveRpc, started((input) => archiveTasks(ctx, input)));
   server.handle(uiMoveRpc, started((input) => moveTask(ctx, input)));
   server.handle(tasksSeenRpc, started((input) => markSeen(ctx, input)));
   server.handle(uiOptionsRpc, started((input) => planOptions(dashboard, input)));
@@ -405,21 +408,29 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(spacesSyncRpc, async ({ space }) => {
     await dashboard.start();
-    if (!dashboard.owner) return { ok: false, error: dashboard.ownerReason };
+    if (!dashboard.owner) return { ok: false, error: dashboard.ownerReason, spaces: [] };
     const target = space ? dashboard.spaces.get(space.toUpperCase()) : undefined;
-    if (space && !target) return { ok: false, error: `no space ${space}` };
+    if (space && !target) return { ok: false, error: `no space ${space}`, spaces: [] };
+    const targets = target ? [target] : [...dashboard.spaces.values()];
     try {
-      // "Sync now" also asks the forges about live runs' PRs/MRs, and git whether tracked trunk
+      // "Sync" also asks the forges about live runs' PRs/MRs, and git whether tracked trunk
       // checkouts landed, in the background.
       void dashboard.prs.checkAll().catch(() => undefined);
       for (const run of dashboard.runs?.runs.values() ?? []) void dashboard.refreshLanded(run);
-      const result = await within(target ? target.sync.sync() : dashboard.syncAll(), (error) => {
-        if (target) target.sync.state.error = message(error);
-      });
-      if (!result.done) return { ok: true, error: "still syncing in the background" };
-      return { ok: true, error: "" };
+      // Each space's own queue, never skipped like an overlapping loop tick: the person asked for a fetch now.
+      const work = Promise.all(
+        targets.map(({ sync }) =>
+          sync.sync().catch((error: unknown) => {
+            sync.state.error = `the plan could not be updated: ${message(error)}`;
+          }),
+        ),
+      );
+      const result = await within(work, () => undefined);
+      const answer = syncAnswer(targets);
+      if (!result.done) return { ok: true, ...answer, error: ["still syncing in the background", answer.error].filter(Boolean).join("; ") };
+      return { ok: !answer.error, ...answer };
     } catch (error) {
-      return { ok: false, error: message(error) };
+      return { ok: false, error: message(error), spaces: [] };
     }
   });
 

@@ -10,7 +10,7 @@ import { liveNow, liveOverlap } from "./live.ts";
  * same name. Not described to God Mode: ChatGPT reads tasks and moves them with update_task.
  */
 
-/** The columns, left to right. Canceled work has no column: it will not be done. */
+/** The columns, left to right. Canceled work has no column: it will not be done. Archived work is off the board. */
 export const BOARD_COLUMNS = ["draft", "ready", "blocked", "running", "review", "done"] as const;
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
 
@@ -28,6 +28,10 @@ export const mergedPr = z.object({ label: z.string(), url: z.string(), merged_at
 /** A board card: a task row, with the work merged outside the dashboard when there is some. */
 export const boardRow = taskRow.extend({
   merged: z.array(mergedPr).optional(),
+  /** Archived: off the board until put back (03-model.md, Archive); shown only under the Archived filter. */
+  archived: z.literal(true).optional(),
+  /** In progress with no live run: a person closes it, puts it back to todo, or starts it again. */
+  unheld: z.literal(true).optional(),
   /** The latest call of the task's agent on this machine, while it runs (shared/live.ts). */
   live: liveNow.optional(),
   /** Other tasks whose runs on this machine change some of the same files (shared/live.ts). */
@@ -41,6 +45,8 @@ export const uiBoardRpc = defineRpc({
     mine: z.boolean().optional(),
     label: z.string().trim().min(1).optional(),
     query: z.string().trim().min(1).max(200).optional(),
+    /** Only the archived tasks (done and canceled), in the done column; without it they are left out. */
+    archived: z.boolean().optional(),
   }),
   output: z.object({
     columns: z.array(

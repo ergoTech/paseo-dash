@@ -41,7 +41,21 @@ test("the task screen says what can be done from here", async () => {
   const s = await setup();
   try {
     const actions = (id: string) => taskView(s.dashboard, { task: id }, s.ctx.now!()).actions;
-    assert.deepEqual(actions("TST-FX001"), { start: "", blocked_by: [], release: false, continue: false, landed_done: false, close: true, reopen: false, triage: false, line: "", archive: false });
+    assert.deepEqual(actions("TST-FX001"), {
+      start: "",
+      blocked_by: [],
+      release: false,
+      continue: false,
+      landed_done: false,
+      close: true,
+      unheld: false,
+      reopen: false,
+      triage: false,
+      line: "",
+      archive: false,
+      archive_task: false,
+      unarchive: false,
+    });
     assert.equal(actions("TST-DEP01").start, "", "a blocked task starts only anyway, which the screen offers");
     assert.deepEqual(actions("TST-DEP01").blocked_by, ["TST-TASK1 «one» (todo)"]);
     assert.equal(actions("TST-ST001").start, "project site is not mapped on this Mac");
@@ -129,7 +143,7 @@ test("a start refuses when its project, branch, workspace or agent is not the on
     s.sync().plan.space!.defaults.agent_profile = "Review";
     const refused = await startTask(s.ctx, { task: "TST-FX001" }, { seen, shown: shown(check) });
     assert.equal(refused.ok, false);
-    assert.equal(refused.error, `What the start would do changed after the confirmation showed it: the agent is now Review (the space's), not ${check.profile}. Check the start again.`);
+    assert.equal(refused.error, `What the start would do changed after the confirmation showed it: the agent is now Review (the space's); model claude-haiku-5-5 (the profile's), not ${check.profile}. Check the start again.`);
     assert.equal(s.task("TST-FX001")!.status, "todo", "nothing was claimed");
     const again = await uiStartCheck(s.ctx, { task: "TST-FX001", anyway: false });
     // The issue the agent is told to close changes too: it is not part of the instructions' hash.

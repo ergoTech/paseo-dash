@@ -1,6 +1,6 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { overlapText } from "../../shared/live.ts";
-import { type Feature, hasLiveRun, refId, type Task } from "../../shared/model.ts";
+import { type Feature, hasLiveRun, isArchived, refId, startable, type Task, unheld } from "../../shared/model.ts";
 import type {
   inboxListRpc,
   releaseCheckRpc,
@@ -22,6 +22,7 @@ import { closureFact } from "../issues/link.ts";
 import { issueFacts, readableIssue } from "../tracker/issues.ts";
 import { localProjects } from "../spaces/local.ts";
 import type { AgentSettings } from "../runner/profiles.ts";
+import { pickForTask, taskSignals } from "../runner/model-policy.ts";
 import { HANDOFF_MAX } from "../agent-tools/schema.ts";
 import { agentTitle, spaceTemplate } from "../runner/prompt.ts";
 import type { RunRecord } from "../runner/runs.ts";
@@ -31,7 +32,7 @@ import { type FoundEntity, type Resolved, resolveEntity, resolveProject, resolve
 import { type Found, type Match as TaskMatch, namedThings, parseQuery, search } from "../search/core.ts";
 import { historyWithin, localRecord, runProgress, runResult } from "./runs.ts";
 import { claiming, needOf } from "../needs.ts";
-import { decideSet, waitsText } from "./start-verdict.ts";
+import { decideSet, UNHELD_REASON, waitsText } from "./start-verdict.ts";
 import { startWithoutAsking } from "../godmode-settings.ts";
 import { findPerson, personByEmail, sameLabel } from "../../shared/labels.ts";
 import {
@@ -271,9 +272,10 @@ function taskRowOf(ctx: ReadContext, plan: Plan, task: Task, host: string, match
 type Board = RpcOutput<typeof uiBoardRpc>;
 
 /**
- * The board's columns (shared/board.ts): every task of the spaces asked for but canceled ones, cut by
- * taskSection and ordered by sortTasks, the same as tasks.list; each column lists at most its limit,
- * done the latest finished ones, and counts the rest.
+ * The board's columns (shared/board.ts): every task of the spaces asked for but canceled and archived
+ * ones, cut by taskSection and ordered by sortTasks, the same as tasks.list; each column lists at most
+ * its limit, done the latest finished ones, and counts the rest. With `archived`, only the archived
+ * tasks, done and canceled both, in the done column (03-model.md, Archive).
  */
 export async function readBoard(ctx: ReadContext, input: RpcInput<typeof uiBoardRpc>): Promise<Board> {
   const columns = (): Board["columns"] => BOARD_COLUMNS.map((column) => ({ column, total: 0, tasks: [] }));
@@ -290,8 +292,9 @@ export async function readBoard(ctx: ReadContext, input: RpcInput<typeof uiBoard
   for (const space of spaces.value) {
     const plan = space.sync.plan;
     for (const loaded of plan.entities.values()) {
-      if (loaded.entity.type !== "task" || loaded.entity.status === "canceled") continue;
+      if (loaded.entity.type !== "task") continue;
       const task = loaded.entity;
+      if (input.archived ? !isArchived(task) : task.status === "canceled" || isArchived(task)) continue;
       if (!passes(filter.value, space, task)) continue;
       items.push({ task, plan, loaded });
     }
@@ -304,7 +307,7 @@ export async function readBoard(ctx: ReadContext, input: RpcInput<typeof uiBoard
   const byColumn = new Map(out.map((c) => [c.column as string, c]));
   const overlaps = overlapsByTask(ctx.dashboard);
   for (const item of sortTasks(found, { activity: (task) => localRun(ctx.dashboard.runs, task)?.activity })) {
-    const column = byColumn.get(taskSection(item.plan, item.task));
+    const column = byColumn.get(input.archived ? "done" : taskSection(item.plan, item.task));
     if (!column) continue;
     column.total += 1;
     if (column.tasks.length >= (column.column === "done" ? BOARD_DONE_LIMIT : BOARD_COLUMN_LIMIT)) continue;
@@ -314,6 +317,8 @@ export async function readBoard(ctx: ReadContext, input: RpcInput<typeof uiBoard
     column.tasks.push({
       ...taskRowOf(ctx, item.plan, item.task, host, item.match),
       ...(merged.length ? { merged } : {}),
+      ...(isArchived(item.task) ? { archived: true } : {}),
+      ...(unheld(item.task) ? { unheld: true } : {}),
       ...(live ? { live } : {}),
       ...(shared ? { overlaps: shared } : {}),
     });
@@ -346,6 +351,7 @@ const EMPTY_TASK: TaskRead = {
   labels: [],
   issue: "",
   issue_state: "",
+  agent_profile: "",
   branch: "",
   held_by: "",
   host: "",
@@ -396,6 +402,7 @@ export function getTask(ctx: ReadContext, input: RpcInput<typeof tasksGetRpc>): 
     labels: task.labels,
     issue: task.issue ?? "",
     issue_state: issue.note ? `${issue.state}: ${issue.note}` : issue.state,
+    agent_profile: task.agent_profile ?? "",
     branch: live ? (task.run_branch ?? "") : plannedBranch(plan, task),
     held_by: live ? (task.run_by ?? "") : "",
     host: live ? (task.run_host ?? "") : "",
@@ -576,7 +583,7 @@ export function releaseCheck(ctx: ReadContext, input: RpcInput<typeof releaseChe
   const found = resolveEntity([...ctx.dashboard.spaces.values()], "task", input.task);
   if (!found.ok) return { ...empty, error: found.error };
   const task = found.value.entity;
-  if (!hasLiveRun(task)) return { ...empty, error: `«${task.title}» (${task.id}) is ${task.status} and has no live run; nothing to release.` };
+  if (!hasLiveRun(task)) return { ...empty, error: `«${task.title}» (${task.id}) is ${task.status} and has no live run; nothing to release.${unheld(task) ? " Change its status with update_task (todo, done or canceled)." : ""}` };
   return {
     title: task.title,
     held_by: task.run_by ?? "someone",
@@ -630,6 +637,8 @@ export interface StartOptions {
   mode?: string;
   /** The effort a person picked in the dashboard's confirmation, one of the model's. God Mode never sets it. */
   effort?: string;
+  /** The model a person picked in the dashboard's confirmation, one of the provider's. God Mode never sets it. */
+  model?: string;
   /**
    * A start nobody asked for by this task alone (Start ready tasks, the autopilot, start_tasks): refused
    * for a task its labels mark as a person's work, also when the claim's fresh fetch is the first to show the label.
@@ -735,7 +744,10 @@ export async function planStart(
   if (hasLiveRun(task)) {
     return fail(`${name} is already started by ${task.run_by ?? "someone"} on ${task.run_host ?? "another machine"} since ${spokenTime(task.run_started, clock(ctx))}.`);
   }
-  if (task.status !== "todo") return fail(`${name} is ${task.status}, not todo; only a todo task can start.`);
+  if (!startable(task)) return fail(`${name} is ${task.status}, not todo; only a todo task can start.`);
+  // Unheld (in progress with no live run, 03-model.md, Statuses): a person decides what became of it,
+  // so only a start someone asked for claims it again, never the autopilot.
+  if (options.automatic && task.status !== "todo") return fail(`${name} is ${task.status} with no live run; only a person starts it again.`);
   if (options.automatic && human) return fail(`${name}: ${human}.`);
   blocking = blockingTasks(plan, task);
   waits = waitsOf(ctx.dashboard, plan, space.record.mapping, blocking);
@@ -799,6 +811,9 @@ export async function planStart(
       mode: { asked: options.mode, space: space.sync.plan.space?.defaults.mode, mac: macStart && { id: macStart.mode, provider: macStart.mode_provider } },
       effort: options.effort,
       macEffort: macStart?.effort,
+      model: options.model,
+      // The same pick for the confirmation, the autopilot and God Mode (server/runner/model-policy.ts); on until this Mac turns it off.
+      policy: macStart?.auto_model === false ? undefined : pickForTask(taskSignals(task, loaded)),
     }),
     usableBase ? deciding() : undefined,
     instructionsParts(space, loaded),
@@ -812,7 +827,8 @@ export async function planStart(
   facts.branch = decided.note ? `${branch} (${decided.note})` : branch;
   const workspaceTitle = decided.workspace.kind === "reuse" ? previous?.title || `${task.project}:${branch}` : agentTitle(task);
   facts.workspace = decided.workspace.kind === "reuse" ? `the previous run's workspace «${workspaceTitle}»` : `a new worktree, «${workspaceTitle}»`;
-  facts.profile = choice.settings.label;
+  // God Mode reads the model in the agent's fact: the profile alone no longer names it.
+  facts.profile = `${choice.settings.label}; model ${choice.settings.model}`;
   // Said in the facts God Mode reads back too: a start in such a mode waits for a person at once.
   // God Mode shows at most 8 fields of a read-back, all taken: the effort is said with the mode.
   const mode = choice.settings.asks ? `${choice.settings.mode}; it stops for the user's approval, so the agent waits for the user` : choice.settings.mode;
@@ -897,7 +913,11 @@ export async function startCheck(ctx: ReadContext, input: RpcInput<typeof startC
   const plan = { ...checked, facts };
   const asks_first = !startWithoutAsking(ctx.dashboard.dataDir);
   // A task marked as a person's work can start, but only on its own: start_plan's decision says so.
-  if ("found" in plan && !plan.facts.human) return { ...plan.facts, decision: "can_start", next: "", waits_for: "", asks_first };
+  // An unheld task (in progress with no live run) says why a start is allowed: it claims the task again.
+  if ("found" in plan && !plan.facts.human) {
+    const task = plan.found.entity;
+    return { ...plan.facts, decision: "can_start", next: unheld(task) ? UNHELD_REASON(task.status) : "", waits_for: "", asks_first };
+  }
   const found = notOwner(ctx) ? undefined : resolveEntity([...ctx.dashboard.spaces.values()], "task", input.task);
   if (!found?.ok) return { ...plan.facts, decision: "refused", next: "nothing starts until this is fixed: tell the user the reason", asks_first };
   // A blocked task's other objections come only from a check past its blockers.
@@ -923,7 +943,7 @@ function existingFacts(existing: ExistingBranch): NonNullable<RpcOutput<typeof u
 
 /** The dashboard's start confirmation: God Mode's facts plus the blocking tasks and the diffs. */
 export async function uiStartCheck(ctx: ReadContext, input: RpcInput<typeof uiStartCheckRpc>): Promise<RpcOutput<typeof uiStartCheckRpc>> {
-  const plan = await planStart(ctx, input, { startPast: input.anyway ? "all" : [], mode: input.mode, effort: input.effort, cached: true, branch: input.branch });
+  const plan = await planStart(ctx, input, { startPast: input.anyway ? "all" : [], mode: input.mode, effort: input.effort, model: input.model, cached: true, branch: input.branch });
   const settings = "found" in plan ? plan.settings : undefined;
   return {
     ...plan.facts,
@@ -935,6 +955,10 @@ export async function uiStartCheck(ctx: ReadContext, input: RpcInput<typeof uiSt
     effort: settings?.effort ?? "",
     effort_id: settings?.thinkingOptionId ?? "",
     efforts: settings?.efforts ?? [],
+    model: settings?.model ?? "",
+    model_id: settings?.modelId ?? "",
+    models: settings?.models ?? [],
+    profiles: settings?.profiles ?? [],
     blocked_by: plan.blocking.map((b) => b.text),
     blocked_ids: plan.blocking.map((b) => b.id),
     waits: plan.waits,

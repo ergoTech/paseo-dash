@@ -1,4 +1,4 @@
-import { refId, type Task } from "../../shared/model.ts";
+import { refId, type Task, unheld } from "../../shared/model.ts";
 import { plannedBranch } from "../api/view.ts";
 import type { Plan } from "../plan/load.ts";
 import { SAFE_BRANCH } from "../sync/git.ts";
@@ -7,8 +7,9 @@ import { type ForgeCli, type ForgePr, prUrlOfProject } from "./forge.ts";
 
 /**
  * Work merged outside the dashboard (03-model.md, Work merged outside the dashboard): a task that
- * never ran, in `todo` or `inbox`, whose branch's latest PR/MR, or a PR/MR of its project among its
- * `links`, was merged after the task was created. Such work was done by a session the dashboard did
+ * never ran, in `todo` or `inbox`, or one in progress that no live run holds (`unheld`),
+ * whose branch's latest PR/MR, or a PR/MR of its project among its `links`, was merged after the task
+ * was created. Such work was done by a session the dashboard did
  * not start, so no run follows it and nothing moves the task. It is runtime state per machine, like
  * an issue's state: shown with "Mark done", never written to the plan, and it never changes the task.
  *
@@ -58,13 +59,16 @@ export interface MergedCandidates {
 }
 
 /**
- * The candidates of a task this machine follows: `todo` or `inbox`, never started (no `run_id`; a
- * task with a run is followed by its run's PR/MR), in a project of the space, with a `created` time
+ * The candidates of a task this machine follows: `todo` or `inbox` never started (no `run_id`; a task
+ * with a run is followed by its run's PR/MR), or in progress with no live run (`unheld`: a
+ * session outside the dashboard set the status, so no run's PR/MR is followed), in a project of the
+ * space, with a `created` time
  * to compare merges with, and with a branch or a PR/MR link to look up. The default branch name
  * (`task/<id>-<slug>`) is not looked up: only a start makes it, and a start makes a run.
  */
 export function mergedCandidates(plan: Plan, task: Task): MergedCandidates | undefined {
-  if ((task.status !== "todo" && task.status !== "inbox") || task.run_id || !task.project) return undefined;
+  const neverRan = (task.status === "todo" || task.status === "inbox") && !task.run_id;
+  if ((!neverRan && !unheld(task)) || !task.project) return undefined;
   const project = plan.space?.projects[task.project];
   if (!project || !Number.isFinite(Date.parse(task.created ?? ""))) return undefined;
   const feature = plan.entities.get(refId(task.feature) ?? "")?.entity;

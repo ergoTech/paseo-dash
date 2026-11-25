@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { Platform, Text, View } from "react-native";
 import { releaseCheckRpc, tasksReleaseRpc, tasksUpdateRpc } from "../shared/api.ts";
-import { CLARIFICATION_MAX, tasksArchiveWorkspaceRpc, uiMoveRpc, uiOptionsRpc, uiStartCheckRpc, uiStartRpc } from "../shared/ui.ts";
+import { CLARIFICATION_MAX, tasksArchiveRpc, tasksArchiveWorkspaceRpc, uiMoveRpc, uiOptionsRpc, uiStartCheckRpc, uiStartRpc } from "../shared/ui.ts";
 import type { Glyph } from "../shared/map.ts";
 import { Button, Chip, isWebUrl, ItemRow, type Styles } from "./common.tsx";
 import { Choice, Field, TaskPicker, useRefresh } from "./forms.tsx";
@@ -146,9 +146,9 @@ const START_GC_MS = 60_000;
  * refreshes both (`useRefresh`). The start sends, or checks against its own decision, every row of
  * the facts the dialog showed.
  */
-const startFacts = (check: StartCheck, task: string, branch?: BranchChoice) => ({
-  queryKey: ["dashboard-start", task, branch ?? ""],
-  queryFn: () => check({ task, anyway: true, ...(branch ? { branch } : {}) }),
+const startFacts = (check: StartCheck, task: string, branch?: BranchChoice, agent: { profile?: string; model?: string } = {}) => ({
+  queryKey: ["dashboard-start", task, branch ?? "", agent.profile ?? "", agent.model ?? ""],
+  queryFn: () => check({ task, anyway: true, ...(branch ? { branch } : {}), ...(agent.profile ? { profile: agent.profile } : {}), ...(agent.model ? { model: agent.model } : {}) }),
   staleTime: START_STALE_MS,
   gcTime: START_GC_MS,
 });
@@ -159,6 +159,9 @@ export function usePrefetchStart(): (task: string) => void {
   const check = useRpc(uiStartCheckRpc);
   return useCallback((task: string) => void client.prefetchQuery({ ...startFacts(check, task), staleTime: 0 }), [client, check]);
 }
+
+/** The agent fact without the model the server appends for God Mode: the dialog shows the model on its own line. */
+const agentOnly = (profile: string, model: string) => (model && profile.endsWith(`; model ${model}`) ? profile.slice(0, -`; model ${model}`.length) : profile);
 
 /** A mode or effort picked in the confirmation, said as the server says a pick. */
 const pickedText = (option: { id: string; label: string; asks?: boolean }) =>
@@ -171,7 +174,9 @@ const pickedText = (option: { id: string; label: string; asks?: boolean }) =>
  * when it can start now, which turns this dialog into that task's start; the task itself starts only
  * with "Start anyway". The mode can be switched to another of the provider's; one that asks before
  * tools is said plainly, since its agent stops for a person at once. The effort can be switched to
- * another of the model's. A clarification typed here is kept on the task and wins over the brief
+ * another of the model's. The model shows why it was picked for the task (server/runner/model-policy.ts);
+ * another model or an agent profile picked here wins, and the facts are read again for it, as its
+ * efforts (and a profile's modes) are its own. A clarification typed here is kept on the task and wins over the brief
  * where they disagree. The start sends the hashes of what this dialog showed, so it refuses if the
  * instructions changed while it was open. The facts may come from a read ahead (`usePrefetchStart`)
  * or the last 20 seconds: picking a mode, an effort or "Start anyway" asks the daemon nothing. The
@@ -212,18 +217,26 @@ export function StartDialog({
   const [branch, setBranch] = useState<BranchChoice | undefined>();
   /** A mode picked here; undefined keeps the one the profile, the space or the provider gives. */
   const [mode, setMode] = useState<string | undefined>();
-  /** An effort picked here; undefined keeps the profile's or the model's default. */
+  /** An effort picked here; undefined keeps the profile's, the task's pick or the model's default. */
   const [effort, setEffort] = useState<string | undefined>();
+  /**
+   * A profile or a model picked here; undefined keeps what the task, the space or the policy gives.
+   * Each changes the efforts (and a profile the modes) offered, so the daemon is asked again.
+   */
+  const [profile, setProfile] = useState<string | undefined>();
+  const [model, setModel] = useState<string | undefined>();
   const [clarification, setClarification] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const facts = useQuery({ ...startFacts(check, current, branch), enabled: open });
+  const facts = useQuery({ ...startFacts(check, current, branch, { profile, model }), enabled: open });
   const switchTo = (id: string) => {
     setCurrent(id);
     setAnyway(false);
     setBranch(undefined);
     setMode(undefined);
     setEffort(undefined);
+    setProfile(undefined);
+    setModel(undefined);
     setClarification("");
     setError("");
   };
@@ -250,6 +263,9 @@ export function StartDialog({
       const shownEffort = effort ?? (f.efforts.some((e) => e.id === f.effort_id) ? f.effort_id : undefined);
       const answer = await start({
         task: current,
+        // Only what the person picked: the start decides the rest again and refuses if it differs from the agent shown.
+        ...(profile ? { profile } : {}),
+        ...(model ? { model } : {}),
         ...(shown ? { mode: shown } : {}),
         ...(shownEffort ? { effort: shownEffort } : {}),
         start_past: anyway ? f.blocked_ids : [],
@@ -344,7 +360,8 @@ export function StartDialog({
                     ["Project", f.project],
                     ["Branch", f.branch],
                     ["Workspace", f.workspace],
-                    ["Agent", f.profile],
+                    ["Agent", agentOnly(f.profile, f.model)],
+                    ["Model", f.model],
                     ["Mode", pickedMode ? pickedText(pickedMode) : f.mode],
                     ["Effort", pickedEffort ? pickedText(pickedEffort) : f.effort],
                     ["Instructions", f.instructions],
@@ -352,6 +369,52 @@ export function StartDialog({
                   ]}
                   styles={styles}
                 />
+                {f.profiles.length ? (
+                  <View style={[styles.row, { flexWrap: "wrap" }]}>
+                    {[undefined, ...f.profiles].map((name) => (
+                      <Chip
+                        key={name ?? ""}
+                        label={name ?? "Default"}
+                        active={profile === name}
+                        accessibilityLabel={name ? `Agent profile ${name}` : "No profile picked: the task's, the space's or this Mac's"}
+                        onPress={
+                          busy
+                            ? undefined
+                            : () => {
+                                // Another profile may be another provider: its modes, models and efforts are not this one's.
+                                setProfile(name);
+                                setModel(undefined);
+                                setMode(undefined);
+                                setEffort(undefined);
+                              }
+                        }
+                        styles={styles}
+                      />
+                    ))}
+                  </View>
+                ) : null}
+                {f.models.length > 1 ? (
+                  <View style={[styles.row, { flexWrap: "wrap" }]}>
+                    {f.models.map((m) => (
+                      <Chip
+                        key={m.id}
+                        label={m.label}
+                        active={m.id === f.model_id}
+                        accessibilityLabel={`Model ${m.label}`}
+                        onPress={
+                          busy || m.id === f.model_id
+                            ? undefined
+                            : () => {
+                                // Efforts are the model's own: the one picked before may not be offered.
+                                setModel(m.id);
+                                setEffort(undefined);
+                              }
+                        }
+                        styles={styles}
+                      />
+                    ))}
+                  </View>
+                ) : null}
                 {f.modes.length > 1 ? (
                   <View style={[styles.row, { flexWrap: "wrap" }]}>
                     {f.modes.map((m) => (
@@ -739,6 +802,66 @@ export function ArchiveWorkspaceDialog({ task, title, open, onClose, styles }: {
         <Actions styles={styles}>
           <Button label="Close" ghost onPress={onClose} styles={styles} />
           <Button label={busy ? "Archiving…" : "Archive"} disabled={busy} onPress={() => void go()} styles={styles} />
+        </Actions>
+      </Modal.Content>
+    </Modal>
+  );
+}
+
+/**
+ * Archives finished tasks off the board, or puts them back (03-model.md, Archive): the tasks named, or
+ * every done and canceled task of a feature, a space or every space (`finishedOf`). Nothing else of a
+ * task changes: its file stays in the plan, its run, branch and PR/MR as they are.
+ */
+export function ArchiveTasksDialog({ tasks, finishedOf, title, note, archived, open, onClose, styles }: {
+  tasks?: string[];
+  finishedOf?: { space?: string; feature?: string };
+  title: string;
+  /** What the confirmation says it archives, for a bulk archive ("12 done tasks of Release 2.3"). */
+  note?: string;
+  archived: boolean;
+  open: boolean;
+  onClose: () => void;
+  styles: Styles;
+}) {
+  const toast = useToast();
+  const refresh = useRefresh();
+  const archive = useRpc(tasksArchiveRpc);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const go = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const answer = await archive(tasks ? { archived, tasks } : { archived, finished_of: finishedOf ?? {} });
+      refresh();
+      const count = answer.changed.length;
+      const what = count === 1 ? answer.changed[0]! : `${count} tasks`;
+      if (!answer.ok) return setError(count ? `${archived ? "Archived" : "Put back"} ${what}; ${answer.error}` : answer.error);
+      toast.show(count ? `${archived ? "Archived" : "Back on the board:"} ${what}` : archived ? "Nothing to archive" : "Already on the board", { variant: "success" });
+      onClose();
+    } catch (failure) {
+      setError(`Unknown whether it changed: ${message(failure)}`);
+      refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const label = archived ? "Archive" : "Unarchive";
+  return (
+    <Modal title={label} open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
+      <Modal.Content>
+        <Text style={styles.heading}>{title}</Text>
+        {note ? <Text style={styles.text}>{note}</Text> : null}
+        <Text style={styles.text}>
+          {archived
+            ? "Archived tasks leave the board and stay in the plan: search finds them, the board's Archived filter lists them, and Unarchive puts them back. Their runs, branches and PRs/MRs are not touched."
+            : "The task goes back on the board, in its column."}
+        </Text>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <Actions styles={styles}>
+          <Button label="Close" ghost onPress={onClose} styles={styles} />
+          <Button label={busy ? `${label.replace(/e$/, "")}ing…` : label} disabled={busy} onPress={() => void go()} styles={styles} />
         </Actions>
       </Modal.Content>
     </Modal>

@@ -230,7 +230,7 @@ labels: [backend, bug]  # optional; flat for Obsidian (not `tags`, whose values 
 depends_on: ["[[LAC-5RT2M-totp-contract-in-docs-api]]"]
 branch:                 # optional override; see "Branch names" below
 base:                   # optional override of the project's trunk
-agent_profile:          # optional launch override
+agent_profile:          # optional launch override: a profile name of the host; `update_task` sets it, only a name the host has
 meeting: https://laconote.com/meeting/0d4c...7e                   # provenance of a draft: <web URL>/meeting/<id>
 meeting_title: Weekly sync, 24 Oct
 issue: https://gitlab.example.com/backend/core/-/issues/31   # optional: the forge issue the task stands for
@@ -248,6 +248,7 @@ progress_done: 3        # written from the current run's agent reports; reset by
 progress_total: 5
 progress_note: Enroll and verify endpoints done; recovery codes next.
 progress_at: 2026-10-25T21:52:40Z
+archived:               # done or canceled tasks only: when a person took it off the board (see "Archive")
 created: 2026-10-25T20:58:11Z
 updated: 2026-10-25T21:52:40Z
 ---
@@ -378,7 +379,7 @@ holds and what the person can do (mark the task done, or start it in Paseo Dash)
 | --- | --- |
 | `inbox` | A draft. May lack a project; not startable. |
 | `todo` | Accepted and specified enough to hand to an agent. |
-| `in_progress` | Claimed: a live run on someone's machine. |
+| `in_progress` | Claimed: a live run on someone's machine. Without a live run it is *unheld* (below). |
 | `review` | The live run's work is up for review: its PR/MR is open or its agent says it is done. |
 | `done` | Merged or accepted. |
 | `canceled` | Will not be done. Reversible. |
@@ -402,6 +403,7 @@ stateDiagram-v2
     in_progress --> todo: release
     in_progress --> canceled: release
     in_progress --> done: release
+    in_progress --> in_progress: start of an unheld task (claim)
     review --> todo: release
     review --> canceled: release
     review --> done: release
@@ -443,13 +445,27 @@ Four rules keep a live run's status from flapping or getting stuck:
   early with a confirmed release. The one exception is a start that failed before Paseo was asked for
   its agent: it releases itself back to `todo`, since nothing runs under it.
 
+**In progress with no run (unheld).** A task in `in_progress` with no live run (no `run_id`, or a
+`run_ended` already written) is held by nothing: a session outside the dashboard, a hub merging the
+plan (ERG-M09A8 and ERG-GXH0R, set to `in_progress` by a plan MR on 2026-11-22 after their work was
+merged), or a hand edit set the status. No run will move it and no release applies to it, since there
+is no run to end. Its status does not change by itself either; a person decides (added 2026-11-24):
+`in_progress → done`, `→ todo` or `→ canceled` directly (the task screen, ChatGPT's `update_task`), or
+**Start**, which claims it for a new run exactly as a `todo` task is claimed, with the same branch
+check (a task without `run_id` meets an existing branch of its planned name as one that never ran
+does, see [Branch names](#branch-names); one with an ended run continues as after a release). The
+autopilot never starts it. A start that fails before Paseo is asked for its agent releases it to
+`todo`, not back to `in_progress`. Review with no live run stays what it was: work up for the owner's
+test, closed by accepting it.
+
 **Work merged outside the dashboard.** A task with no run never moves by a merge: nothing above
 applies to it, since no `run_pr` exists. Sessions the dashboard did not start still finish such
 tasks, so each machine looks for that work and shows it (runtime, see
-[Merged work](#merged-work-runtime-per-machine)): a task in `todo` or `inbox` without `run_id`, with a
-`created` time, whose branch's latest PR/MR or a PR/MR of its project among its `links` was merged
-after `created`, shows "Work already merged: <PR/MR>" on the board and the task screen, with
-**Mark done**. The status does not change by itself: `todo → done` is a person's transition. A draft
+[Merged work](#merged-work-runtime-per-machine)): a task in `todo` or `inbox` without `run_id`, or an
+unheld one, with a `created` time, whose branch's latest PR/MR or a PR/MR of its project among its
+`links` was merged after `created`, shows "Work already merged: <PR/MR>" on the board and the task
+screen, with **Mark done**. The status does not change by itself: `todo → done` and `in_progress → done`
+(unheld) are a person's transitions. A draft
 is accepted and marked done in one confirmation (`inbox → todo`, then `todo → done`, both a person's);
 `inbox → done` stays no edge.
 
@@ -463,13 +479,37 @@ The one table of allowed transitions; every handler checks it, and nothing else 
 | `inbox` → `canceled` | A person, ChatGPT (`update_task`) | Reject, or merge into another task (`duplicate_of`) |
 | `todo` → `inbox` | A person (the board, 04-ux.md), ChatGPT (`update_task`) | Back to the drafts; no run involved (added 2026-11-03) |
 | `todo` → `in_progress` | A person (Start, or "Track as task" on a Paseo workspace, which creates the task as `todo` and claims it in one operation), ChatGPT (`start_task`, confirmed) | Claim: a new live run |
+| `in_progress` (unheld) → `in_progress` | A person (Start), ChatGPT (`start_task`, confirmed); never the autopilot | Claim: a new live run, with the branch check of a `todo` start (added 2026-11-24) |
 | `in_progress` → `review` | The run: its PR/MR seen open and not a draft for the first time (tracker; recorded as `run_pr`), or its agent reports `done`; a person on the run's machine | Run-scoped; an edge, fired once per piece of evidence, never by a later observation of the same open PR/MR |
 | `review` → `in_progress` | A person on the run's machine ("continue work") | Run-scoped; the tracker does not move it forward again for a PR/MR it already recorded |
 | `in_progress` → `done`, `review` → `done` | The run: its own PR/MR merged with every acceptance line ticked (tracker, from any machine), or with lines left once the run's workspace is archived (tracker, on the run's machine) | Run-scoped; ends the run |
 | `in_progress` or `review` → `todo`, `canceled` or `done` | A person, confirmed: the Paseo dialog or ChatGPT `release_task` (`disruptive`) | Release; ends the run |
 | `in_progress` → `todo` | The run: its start failed before Paseo was asked for its agent (on the run's machine) | Run-scoped release; ends the run |
 | `todo` → `done`, `todo` → `canceled` | A person, ChatGPT (`update_task`) | No run involved; "Mark done" on work merged outside the dashboard is this transition (a draft is accepted first) |
-| `done` → `todo`, `canceled` → `todo` | A person, ChatGPT (`update_task`) | Reopen; the old run stays as history |
+| `in_progress` (unheld) → `done`, `todo` or `canceled` | A person (the task screen), ChatGPT (`update_task`) | No live run to release: the status a session outside the dashboard left is corrected; "Mark done" on its merged work is `→ done`. With a live run `update_task` refuses and points to `release_task` (added 2026-11-24) |
+| `done` → `todo`, `canceled` → `todo` | A person, ChatGPT (`update_task`) | Reopen; the old run stays as history; clears `archived` |
+
+### Archive
+
+Finished work piles up on the board: its Done column lists the latest 50 done tasks. A person takes a
+`done` or `canceled` task off the board with **Archive** (on the card, on the task screen), or every
+finished task at once: **Archive all…** in the board's Done column (the space on view, or every space,
+while the board is not narrowed by Mine, a label or words) and **Archive finished…** on a feature.
+
+It is a field, not a status: `archived: <ISO time>` in the task's front matter, written and removed
+only by its own operation (`archive`, [05-architecture.md](05-architecture.md#operations)); it is not
+a status, so the transition table, the derived flags and what a feature's `done` follows are as
+without it, and a machine on an older plugin version reads the file as before (an unknown field is
+ignored) and shows the task on its board. The field counts only while the task is `done` or
+`canceled`: a reopen (`→ todo`), any other status change a person makes and a claim clear it, and an
+`archived` left on an open task by a hand edit shows nothing (and goes with the task's next change of
+status, so it does not come back when the task is finished again). Archiving does not delete the file and does not touch the run fields, the branch
+or the PR/MR; an open task (`inbox`, `todo`, `in_progress`, `review`) is refused, also when another
+machine reopened it before the operation applied.
+
+An archived task is left out of the board only. Search, the Tasks tab, the map and ChatGPT's reads
+find it as before; the board's **Archived** filter lists the archived tasks (done and canceled) in one
+column, each with **Unarchive**, which removes the field and puts the task back in its column.
 
 Derived flags, computed and never stored:
 
@@ -515,7 +555,8 @@ collaborator's machine call a host of the writer's choosing; any other shows `un
 
 What a task without a run had merged outside the dashboard ([Statuses](#statuses)) is read from the
 forge by each machine, like an issue's state, and never written to the plan. A task is followed
-while it is `todo` or `inbox`, has no `run_id`, has a `created` time, and has something to look up:
+while it is `todo` or `inbox` and has no `run_id`, or is unheld (`in_progress` with no live run: no
+run's PR/MR is followed for it), has a `created` time, and has something to look up:
 
 - its branch, when the task's `branch` or its feature's `branch` names one (the default
   `task/<id>-<slug>` is made only by a start, and a start makes a run): the branch's latest PR/MR;

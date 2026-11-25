@@ -34,6 +34,7 @@ import { PLUGIN_NAME } from "../shared/edition.ts";
 import { RankButtons } from "./rank.tsx";
 import { AutopilotSection, StartNextButton } from "./queue.tsx";
 import { BoardTab } from "./board.tsx";
+import { SyncControl } from "./sync.tsx";
 import { TopBar } from "./topbar.tsx";
 import type { RecentItem } from "../shared/ui.ts";
 
@@ -209,7 +210,8 @@ export function SpaceScreen({ theme, layout, params, navigation }: PluginScreenP
                 </View>
                 <LiveStrip space={space} theme={theme} onOpen={setTab} />
               </View>
-              <View style={styles.row}>
+              <View style={[styles.row, { flexWrap: "wrap" }]}>
+                <SyncControl space={space} request={params.sync} styles={styles} theme={theme} />
                 <Button label="+ Task" onPress={() => setCreating("task")} styles={styles} />
                 <Button label="+ Feature" ghost onPress={() => setCreating("feature")} styles={styles} />
                 <Button label="+ Release" ghost onPress={() => setCreating("release")} styles={styles} />

@@ -91,7 +91,16 @@ const runSchema = z.object({
    * The mode and effort the start passed to `agents.create`, each id with where it came from as a
    * person hears it ("High (high, this Mac's default)"); absent for runs started before it was kept and tracked ones.
    */
-  asked: z.object({ modeId: z.string().optional(), mode: z.string(), effortId: z.string().optional(), effort: z.string() }).optional(),
+  asked: z
+    .object({
+      modeId: z.string().optional(),
+      mode: z.string(),
+      effortId: z.string().optional(),
+      effort: z.string(),
+      /** The model id passed; absent in runs started before it was kept. */
+      modelId: z.string().optional(),
+    })
+    .optional(),
   /** What Paseo last reported the agent runs with: its current mode and its effective effort ids. */
   reported: z.object({ modeId: z.string().optional(), effortId: z.string().optional() }).optional(),
 });

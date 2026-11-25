@@ -147,6 +147,11 @@ export const taskSchema = z.object({
   progress_total: count,
   progress_note: text,
   progress_at: scalarText,
+  /**
+   * When a person took the finished task off the board (03-model.md, Archive). It counts only while the
+   * task is done or canceled; a reopen clears it. The file, its run and its PR/MR stay as they are.
+   */
+  archived: scalarText,
 });
 
 export const spaceSchema = z.object({
@@ -289,6 +294,31 @@ export const RUN_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 /** A live run: claimed and not ended (I4). */
 export function hasLiveRun(task: Pick<Task, "run_id" | "run_ended">): boolean {
   return Boolean(task.run_id) && !task.run_ended;
+}
+
+/**
+ * In progress with no live run (03-model.md, Statuses): a session outside the dashboard, a hub merging
+ * the plan or a hand edit set the status, so no run will move it. Only a person does: done, back to
+ * todo, canceled, or a start that claims it for a new run. (Review with no live run stays work up for
+ * the owner's test, as before.)
+ */
+export function unheld(task: Pick<Task, "status" | "run_id" | "run_ended">): boolean {
+  return task.status === "in_progress" && !hasLiveRun(task);
+}
+
+/** Whether a person may start the task: todo, or unheld (see above). A start claims it for a new run. */
+export function startable(task: Pick<Task, "status" | "run_id" | "run_ended">): boolean {
+  return (task.status === "todo" && !hasLiveRun(task)) || unheld(task);
+}
+
+/** Done or canceled: the statuses a task may be archived in (03-model.md, Archive). */
+export function closed(task: Pick<Task, "status">): boolean {
+  return task.status === "done" || task.status === "canceled";
+}
+
+/** Taken off the board: archived and still done or canceled. */
+export function isArchived(task: Pick<Task, "status" | "archived">): boolean {
+  return Boolean(task.archived) && closed(task);
 }
 
 /**

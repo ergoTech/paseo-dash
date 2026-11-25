@@ -1,7 +1,13 @@
 import type { RpcOutput } from "@getpaseo/plugin";
-import type { spacesListRpc } from "../../shared/spaces.ts";
+import type { spacesListRpc, spacesSyncRpc } from "../../shared/spaces.ts";
 import type { Dashboard } from "../dashboard.ts";
 import { planProblems } from "../plan/load.ts";
+
+/** Each synced space's last good fetch and problem, and the problems in one line, for spaces.sync. */
+export function syncAnswer(synced: { record: { key: string; name: string }; sync: { state: { lastFetchOk?: string; error?: string } } }[]): Omit<RpcOutput<typeof spacesSyncRpc>, "ok"> {
+  const spaces = synced.map(({ record, sync }) => ({ key: record.key, name: record.name, last_sync: sync.state.lastFetchOk ?? "", error: sync.state.error ?? "" }));
+  return { spaces, error: spaces.filter((s) => s.error).map((s) => `${s.name} (${s.key}): ${s.error}`).join("; ") };
+}
 
 export function listSpaces(dashboard: Dashboard): RpcOutput<typeof spacesListRpc> {
   return {
