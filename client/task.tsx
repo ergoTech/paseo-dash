@@ -1,6 +1,7 @@
 import type { RpcOutput } from "@getpaseo/plugin";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
+import { DeliverySection } from "./delivery.tsx";
 import { ExternalLink, Markdown, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -146,6 +147,9 @@ export function TaskDetail({
           {t.run ? (
             <Section title="Run" styles={styles}>
               <Text style={styles.text}>{t.run.activity || `held by ${t.run.by} on ${t.run.host}`}</Text>
+              {t.wait && t.wait.state !== "working" && t.wait.state !== "launching" ? (
+                <Text style={styles.muted}>{`${t.wait.state.replace(/_/g, " ")}${t.wait.note ? `: ${t.wait.note}` : ""}`}</Text>
+              ) : null}
               <Text style={styles.muted}>{`${t.run.by} on ${t.run.host} since ${t.run.since} · ${t.run.branch}`}</Text>
               {t.run.settings ? <Text style={styles.muted}>{t.run.settings}</Text> : null}
               {t.run.live ? <LiveRun live={t.run.live} styles={styles} theme={theme} /> : null}
@@ -163,6 +167,16 @@ export function TaskDetail({
             <Text style={styles.text}>{t.progress}</Text>
           ) : null}
           <ResultSection key={t.id} view={t} onCover={setCovered} styles={styles} theme={theme} />
+          {t.hold || t.requires.length || t.readiness ? (
+            <Section title="Before an agent takes it" styles={styles}>
+              {t.hold ? <Text style={styles.text}>{`Nothing starts it on its own: ${t.hold}`}</Text> : null}
+              {t.requires.map((r) => (
+                <Text key={r} style={styles.muted}>{`Requires ${r}`}</Text>
+              ))}
+              <Text style={styles.muted}>{t.readiness ? `Checked ${t.readiness}` : "Nobody has checked yet that it can start as it is."}</Text>
+            </Section>
+          ) : null}
+          {t.delivery ? <DeliverySection task={t.id} styles={styles} theme={theme} /> : null}
           <Section title="Brief" styles={styles}>
             {t.brief ? <Markdown>{t.brief}</Markdown> : <Text style={styles.muted}>No brief yet.</Text>}
           </Section>

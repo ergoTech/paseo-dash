@@ -101,6 +101,12 @@ const runSchema = z.object({
       modelId: z.string().optional(),
     })
     .optional(),
+  /**
+   * What the agent said it waits on when it ended its turn (task_report's `waiting_for`): CI, a review,
+   * its sub-agents or the user. Cleared when its next turn starts; facts from Paseo and the forge
+   * decide whether it still holds (server/needs.ts).
+   */
+  waitingOn: z.object({ kind: z.enum(["ci", "review", "subagent", "user"]), note: z.string().optional(), at: z.string() }).optional(),
   /** What Paseo last reported the agent runs with: its current mode and its effective effort ids. */
   reported: z.object({ modeId: z.string().optional(), effortId: z.string().optional() }).optional(),
 });
@@ -171,6 +177,8 @@ export class RunStore {
       delete run.waitingFor;
       delete run.waitingKind;
     }
+    // A new turn: what the agent said it waited on is over.
+    if (activity === "working" && previous !== "working") delete run.waitingOn;
     for (const [key, value] of Object.entries(extra) as [keyof typeof extra, RunRecord[keyof typeof extra]][]) {
       if (value === undefined) delete run[key];
       else Object.assign(run, { [key]: value });

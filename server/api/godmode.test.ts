@@ -14,6 +14,10 @@ import { acceptCheck, sendBack, taskChecks } from "../result.ts";
 import type { CommandRunner } from "../tracker/forge.ts";
 import { getTaskWithRuns, listInbox, listTasks, planStart, readRoadmap, releaseCheck, startCheck } from "./reads.ts";
 import { setup } from "./testing.ts";
+import { readProfiles, readTaskText, updateTasks } from "./batch.ts";
+import { reconcile } from "./reconcile.ts";
+import { startCandidates } from "./candidates.ts";
+import { taskDelivery } from "../delivery.ts";
 import { startPlan, startSet } from "./start-set.ts";
 import { readAutopilot, setAutopilot } from "../queue.ts";
 import { resumeCheck, resumeTask } from "../autopilot-resume.ts";
@@ -95,6 +99,12 @@ function client(ctx: WriteContext, forge: CommandRunner = async () => ({ code: 1
     "autopilot.read": () => readAutopilot(ctx),
     "autopilot.resume-check": (i) => resumeCheck(ctx, i),
     "autopilot.resume-task": (i) => resumeTask(ctx, i),
+    "tasks.text": (i) => readTaskText(ctx, i),
+    "tasks.delivery": (i) => taskDelivery(ctx, i),
+    "tasks.reconcile": (i) => reconcile(ctx, i),
+    "tasks.start-candidates": (i) => startCandidates(ctx, i),
+    "tasks.profiles": (i) => readProfiles(ctx, i),
+    "tasks.update-many": (i) => updateTasks(ctx, i),
   };
   const contracts = new Map<string, PluginRpcContract>(OPERATIONS.map((op) => [op.contract.name, op.contract]));
   return {
@@ -119,7 +129,7 @@ test("God Mode drives the plugin: reads, a low-risk action twice, task events re
   try {
     const catalog = await pluginReadOn(daemon, {});
     assert.ok(catalog.text.includes(`- ${PLUGIN_NAME} (dashboard): `), catalog.text);
-    assert.equal(catalog.data.plugins[0].reads.length + catalog.data.plugins[0].actions.length, 29);
+    assert.equal(catalog.data.plugins[0].reads.length + catalog.data.plugins[0].actions.length, 35);
     assert.equal(catalog.data.plugins[0].skipped, undefined, "nothing dropped");
 
     const overview = await pluginReadOn(daemon, { plugin: "dashboard" });
@@ -628,6 +638,49 @@ test("ChatGPT finds a task by a dictated id or a vague name and a feature by its
     assert.match(login.text, /^Paseo Dash[^\n]* · Find tasks\n/);
     assert.ok(login.text.indexOf("also: ") < login.text.indexOf("tasks: "), login.text);
     assert.match(login.text, /^also: \[\{"kind":"feature","id":"TST-FEAT1","title":"Login"\}\]$/m);
+  } finally {
+    s.stop();
+  }
+});
+
+test("God Mode reads and acts through JOBBY-YV2QS's operations, refusals included", async (t) => {
+  const gm = await godMode();
+  if (!gm.paseo) return t.skip(gm.why);
+  const { pluginReadOn, pluginActionOn } = gm.paseo;
+  const s = await setup({
+    profiles: [
+      { id: "p1", name: "Review", provider: "claude", model: "claude-haiku-5-5", modeId: "default" },
+      { id: "p2", name: "Sonnet 5.5 High", provider: "claude", model: "claude-sonnet-5-5", modeId: "default", thinkingOptionId: "high" },
+    ],
+  });
+  const daemon = client(s.ctx);
+  const secret = "test-secret";
+  const read = (operation: string, args: Record<string, unknown> = {}) => pluginReadOn(daemon, { plugin: "dashboard", operation, args });
+  try {
+    const profiles = await read("tasks_profiles", { tasks: ["TST-FX001", "TST-DEP01"] });
+    assert.match(profiles.data.result.tasks[0].next_start, /per-task pick/, profiles.text);
+    const batch = { plugin: "dashboard", operation: "update_tasks", secret, args: { items: [{ task: "TST-FX001", agent_profile: "Sonnet 5.5 High" }, { task: "TST-DEP01", agent_profile: "Nope" }], revision: profiles.data.result.revision, key: "gm-batch-0001" } };
+    const done = await pluginActionOn(daemon, batch);
+    assert.deepEqual(done.data.result.items.map((i: { result: string }) => i.result), ["applied", "refused"], done.text);
+    assert.notEqual(done.data.outcome, "done", "a refused item is not hidden behind a success");
+    const again = await pluginActionOn(daemon, batch);
+    assert.equal(again.data.result.items[0].result, "applied", "the retry applies nothing twice");
+    assert.equal(s.task("TST-FX001")!.agent_profile, "Sonnet 5.5 High");
+    const stale = await pluginActionOn(daemon, { ...batch, args: { ...batch.args, key: "gm-batch-0002" } });
+    assert.match(stale.data.result.error, /changed since they were read/);
+
+    const text = await read("task_text", { task: "TST-FX001", section: "acceptance" });
+    assert.equal(text.data.result.text, "1. [x] first\n2. [ ] second");
+    const missing = await read("task_text", { task: "TST-NOPE1", section: "brief" });
+    assert.match(missing.data.result.error, /TST-NOPE1/);
+
+    const candidates = await read("start_candidates", { group: "agent" });
+    assert.ok(candidates.data.result.tasks.length > 0, candidates.text);
+    assert.match(candidates.data.result.note, /Read only/);
+    const reconciled = await read("reconcile", {});
+    assert.equal(reconciled.data.result.error, "", reconciled.text);
+    const delivery = await read("delivery", { task: "TST-FX001" });
+    assert.equal(delivery.data.result.stage, "in_work", delivery.text);
   } finally {
     s.stop();
   }

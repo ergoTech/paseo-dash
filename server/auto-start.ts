@@ -3,7 +3,9 @@ import type { Task } from "../shared/model.ts";
 import type { LoadedEntity } from "./plan/load.ts";
 import type { SpaceEntry } from "./api/resolve.ts";
 import { instructionsParts } from "./api/reads.ts";
-import { humanWork, taskSection } from "./api/view.ts";
+import { taskSection } from "./api/view.ts";
+import { agentHold } from "./api/start-verdict.ts";
+import type { Dashboard } from "./dashboard.ts";
 import type { WriteContext } from "./api/writes.ts";
 import { startWithoutAsking } from "./godmode-settings.ts";
 import { pickForTask, taskSignals } from "./runner/model-policy.ts";
@@ -98,7 +100,7 @@ export async function startNew(ctx: WriteContext, space: SpaceEntry, id: string,
   if (asked === undefined && !defaults.new_tasks) {
     return { start: "todo_only", note: "kept in To Do: this Mac does not start new tasks on its own (Settings → Autopilot → Start new ready tasks)" };
   }
-  const why = waitReason(space, task, loaded!.brief);
+  const why = waitReason(ctx.dashboard, space, task, loaded!.brief);
   if (why) return { start: "waits", note: why };
   const key = space.record.key;
   if (by === "chatgpt" && !startWithoutAsking(ctx.dashboard.dataDir)) {
@@ -120,9 +122,9 @@ export async function startNew(ctx: WriteContext, space: SpaceEntry, id: string,
 }
 
 /** Why a new todo task is not given to the autopilot; "" when nothing holds it back. */
-function waitReason(space: SpaceEntry, task: Task, brief: string): string {
+function waitReason(dashboard: Dashboard, space: SpaceEntry, task: Task, brief: string): string {
   const plan = space.sync.plan;
-  const human = humanWork(plan, task);
+  const human = agentHold(dashboard, plan, task);
   if (human) return `not started: ${human}; start it from its own screen to give it to an agent`;
   const section = taskSection(plan, task);
   if (section === "blocked") return "not started: it waits for other tasks to be done; start it once they are";

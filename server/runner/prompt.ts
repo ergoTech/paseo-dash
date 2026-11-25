@@ -39,6 +39,8 @@ export interface PromptInput {
    */
   continues?: boolean | "existing";
   continuesPr?: string;
+  /** Work of the task merged on the forge already (server/tracker/merged.ts): the agent does only what is left. */
+  merged?: { label: string; url: string; sha?: string; branch?: string }[];
 }
 
 const BUILT_IN = `The user asked you to implement this task, not only to plan it. Work in this worktree on branch {{branch}} (based on {{base}}), commit there, and open a merge request when the work is ready.{{continues}}
@@ -79,6 +81,13 @@ function clarificationsSection(clarifications: string | undefined): string {
   return `## Clarifications\n\n${lead}\n\n${quoted(clarifications)}`;
 }
 
+/** Work of the task merged already, as the prompt's section; empty without any. */
+export function mergedSection(merged: PromptInput["merged"]): string {
+  if (!merged?.length) return "";
+  const lines = merged.map((pr) => `- ${pr.url}${pr.sha ? ` (merge commit ${pr.sha.slice(0, 12)})` : ""}${pr.branch ? ` from branch ${pr.branch}` : ""}`);
+  return `## Already merged\n\nWork of this task is merged already:\n\n${lines.join("\n")}\n\nRead it first. Do not implement it again: do only what the acceptance still leaves open, and say in your report what was merged before you.`;
+}
+
 /** The latest handoff as the prompt's section; empty without one. */
 function handoffSection(handoff: Handoff | undefined): string {
   if (!handoff) return "";
@@ -114,7 +123,7 @@ export function buildPrompt(input: PromptInput): string {
       ? ` This branch already has ${input.continues === "existing" ? "work no run of this task made" : "an earlier run's work"}: read it first and continue from there.${input.continuesPr ? ` Its merge request ${input.continuesPr} is open; push to this branch instead of opening a new one.` : ""}`
       : "",
   };
-  const issue = issueSection(task, task.project ? plan.space?.projects[task.project] : undefined);
+  const issue = [mergedSection(input.merged), issueSection(task, task.project ? plan.space?.projects[task.project] : undefined)].filter(Boolean).join("\n\n");
   const handoff = handoffSection(loaded.handoff);
   const clarifications = clarificationsSection(loaded.clarifications);
   const template = input.template ?? BUILT_IN;

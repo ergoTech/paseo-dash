@@ -90,6 +90,10 @@ export const projectsListRpc = defineRpc({
         group: z.string(),
         /** space.yaml's `web_host`: the forge's web host when the remote's host differs, or empty. */
         web_host: z.string(),
+        /** The host the forge's API serves the project at (GitLab's web_url), once asked from this Mac; else empty. */
+        web_host_served: z.string(),
+        /** What is wrong with the web host and the one fix (server/tracker/web-host.ts); empty when nothing is. */
+        web_host_problem: z.string(),
         /** The Paseo project on this machine it maps to, or null. */
         local: z.object({ project_id: z.string(), name: z.string(), root: z.string() }).nullable(),
         /** True when the mapping was chosen by hand on this machine. */

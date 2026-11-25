@@ -13,7 +13,7 @@ import type {
 } from "../../shared/api.ts";
 import type { tasksArchiveRpc, tasksArchiveWorkspaceRpc, tasksContinueRpc, tasksRankRpc, tasksSeenRpc, uiMoveRpc } from "../../shared/ui.ts";
 import { leftWorkspaces } from "../views.ts";
-import { closed, type Entity, type EntityType, type Feature, hasLiveRun, lineLocked, type Milestone, refId, type Task, unheld } from "../../shared/model.ts";
+import { closed, deliverySchema, type Entity, type EntityType, type Feature, hasLiveRun, lineLocked, type Milestone, refId, type Task, unheld } from "../../shared/model.ts";
 import { briefHash, clarificationEntry, isLastClarification, taskBody } from "../plan/document.ts";
 import { newId, opaqueId } from "../plan/ids.ts";
 import { SAFE_BRANCH } from "../sync/git.ts";
@@ -567,6 +567,11 @@ export async function updateTask(ctx: WriteContext, input: RpcInput<typeof tasks
     issue: issue?.ok ? (issue.value ?? null) : undefined,
     // null takes the field off: the policy and the defaults decide again.
     agent_profile: profile,
+    requires: requirementsFor(task, input.requires, now),
+    delivery: deliveryFor(task, input.delivery, now),
+    // A person's check of its readiness carries its day; "" takes both off.
+    readiness_note: input.readiness_note === undefined ? undefined : input.readiness_note || null,
+    readiness_checked: input.readiness_note === undefined ? undefined : input.readiness_note ? now.toISOString().slice(0, 10) : null,
   };
   const { ops, fields } = changes(task, wanted);
   // One operation per label, so labels added or removed on two machines both land (I2).
@@ -627,6 +632,43 @@ export async function updateTask(ctx: WriteContext, input: RpcInput<typeof tasks
     changed,
     error: problems.length ? `${problems.join("; ")}.${applied}` : "",
   };
+}
+
+/**
+ * The requirements asked for as the plan keeps them: each with the day it was checked, an unchanged
+ * one keeping its day; null takes the list off; undefined leaves it.
+ */
+function requirementsFor(task: Task, asked: { kind: Task["requires"][number]["kind"]; reason: string }[] | undefined, now: Date): unknown {
+  if (asked === undefined) return undefined;
+  if (!asked.length) return null;
+  const today = now.toISOString().slice(0, 10);
+  return asked.map(({ kind, reason }) => {
+    const kept = task.requires.find((r) => r.kind === kind && r.reason === reason.trim());
+    return { kind, reason: reason.trim(), checked: kept?.checked ?? today };
+  });
+}
+
+/**
+ * The delivery facts after a change: the fields given replace theirs ("" clears one), each group gets
+ * the day it was recorded (stage, Trello, QA); null takes it off once nothing is left; undefined leaves it.
+ */
+function deliveryFor(task: Task, asked: RpcInput<typeof tasksUpdateRpc>["delivery"], now: Date): unknown {
+  if (!asked || !Object.values(asked).some((v) => v !== undefined)) return undefined;
+  const next: Record<string, unknown> = { ...(task.delivery ?? {}) };
+  for (const [key, value] of Object.entries(asked)) {
+    if (value === undefined) continue;
+    if (value === "" || (Array.isArray(value) && !value.length)) delete next[key];
+    else next[key] = value;
+  }
+  const at = now.toISOString();
+  if (["stage_sha", "stage_url", "stage_version"].some((k) => (asked as Record<string, unknown>)[k] !== undefined)) next.stage_checked = at;
+  if (asked.trello_state !== undefined) next.trello_checked = at;
+  if (asked.qa !== undefined) next.qa_at = at;
+  // As the plan reads it back: known fields in their order, nothing empty.
+  const normal = deliverySchema.parse(next) ?? {};
+  const out = Object.fromEntries(Object.entries(normal).filter(([, v]) => v !== undefined && !(Array.isArray(v) && !v.length)));
+  const facts = Object.keys(out).filter((k) => !["stage_checked", "trello_checked", "qa_at"].includes(k));
+  return facts.length ? out : null;
 }
 
 // ---------------------------------------------------------------- tasks.rank
@@ -846,6 +888,7 @@ export async function startTask(ctx: WriteContext, input: RpcInput<typeof tasksS
       // A run on a released run's branch, or on an existing branch the person chose, continues its work (and its open PR/MR, if any).
       continues: task.run_branch === branch || (plan.continues ? "existing" : false),
       continuesPr: plan.continuesPr,
+      merged: ctx.dashboard.merged.shown(found.space.sync.plan, task),
     }),
     settings: plan.settings,
     started: run.run_started,

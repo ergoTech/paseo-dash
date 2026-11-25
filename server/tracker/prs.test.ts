@@ -202,7 +202,7 @@ test("a live run's PR is followed through gh: a draft waits, ready moves it to r
     await s.dashboard.prs.checkAll();
     assert.deepEqual([s.task("TST-FX001")?.status, s.task("TST-FX001")?.run_pr], ["in_progress", undefined], "a draft: the agent still works");
     assert.equal(getTask(s.ctx, { task: "TST-FX001" }).pr, "#7 draft — a draft; the task moves to review when it is marked ready");
-    assert.ok(calls.some((c) => c.includes("number,url,state,mergedAt,headRefName,headRefOid,createdAt,isCrossRepository,isDraft")), "gh is asked for the draft flag, the head commit and the creation time");
+    assert.ok(calls.some((c) => c.includes("number,url,state,mergedAt,headRefName,headRefOid,createdAt,isCrossRepository,isDraft,mergeCommit")), "gh is asked for the draft flag, the head commit, the creation time and the merge commit");
     prs[1]!.isDraft = false;
     await s.dashboard.prs.checkAll();
     assert.deepEqual([s.task("TST-FX001")?.status, s.task("TST-FX001")?.run_pr], ["review", "https://github.com/acme/core/pull/7"]);

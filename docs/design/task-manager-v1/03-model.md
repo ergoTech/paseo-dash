@@ -249,6 +249,20 @@ progress_total: 5
 progress_note: Enroll and verify endpoints done; recovery codes next.
 progress_at: 2026-10-25T21:52:40Z
 archived:               # done or canceled tasks only: when a person took it off the board (see "Archive")
+requires:               # optional: what it waits for besides tasks (see "Requirements"); update_task replaces the list
+  - { kind: owner, reason: pick the grace period, checked: 2026-11-20 }
+readiness_checked:      # optional: the day a person last checked it can start as it is
+readiness_note:         # what they found
+delivery:               # optional: the way from merged code to accepted work (see "Delivery")
+  stage_sha: 5e1f0c4
+  stage_url: https://stage.example.com
+  flags: [signal_v2]
+  flags_ready: true
+  device: iPhone 14 Pro
+  device_ready: false
+  trello: https://trello.com/c/AbCd1234
+  trello_state: In QA
+  qa: pending           # pending | passed | failed
 created: 2026-10-25T20:58:11Z
 updated: 2026-10-25T21:52:40Z
 ---
@@ -571,6 +585,54 @@ merged yet). Each machine reads every followed task every 15 minutes, a board on
 when the last one is older than five minutes, and a task screen asks for its own task; a forge that
 does not answer leaves the last reading. A reading for other links, another branch or another
 `created` is not shown.
+
+Besides the branch and the links, the task's own id is looked for (JOBBY-YV2QS): a pass reads each
+project's latest merges once (`glab mr list --merged` or `gh pr list --state merged`, up to 50) and
+ties a merged PR/MR whose title, description or source branch names the id as a whole token
+(`ERG-7MRG1`, `chore/erg-7mrg1-…`; not `ERG-7MRG1A`); a task screen or a `reconcile` of one task also
+asks the forge's search for the id. A session that named its branch otherwise is found that way
+(ERG-7MRG1 and site !412 on `chore/erg-7mrg1-start-signal-diagnostics`). The PR/MRs the forge
+names as the closers of the task's issue count too, when they are its project's own. An issue number
+or a similar title alone never ties one: the same number is another issue in another repository.
+Each reading keeps the merge commit (`mergeCommit` / `merge_commit_sha`, the squash commit when
+squashed), the source branch and how it was tied.
+
+Merged code is not accepted work. A task with merged work stays as it is; its start (start_check,
+start_plan) says what was merged and how many acceptance lines are open, nothing starts it on its own
+(the autopilot, Start next, Start ready tasks, a new task's start), and a start of it alone tells its
+agent what was merged and to do only what is left (`## Already merged`).
+
+#### Requirements
+
+`requires` lists what a task waits for besides other tasks: `owner` and `decision` (a person decides),
+`environment`, `device`, `access` and `qa`. Each says why and the day it was checked; an entry of
+another kind reads as `owner`, so a typo never makes a task look ready. `readiness_checked` and
+`readiness_note` say when a person last checked that it can start, and what they found. Labels of a
+person's work (`defaults.human_labels`) stay as they are; the absence of such a label proves nothing,
+so `start_candidates` says when nobody checked a task.
+
+#### Delivery
+
+`delivery` holds the facts between a merged PR/MR and accepted work that only a person or an agent can
+record: the stage build (`stage_sha`, `stage_url`, `stage_version`), the flags QA needs and whether
+they are on, QA's access, the device QA tests on and whether it is there, the Trello card and its state
+as last checked, and QA's result. `update_task` sets them (`""` clears one) and stamps the day of each
+group (`stage_checked`, `trello_checked`, `qa_at`). The task's way to accepted work (`delivery` read,
+the task screen's Delivery) adds what the forge and git say: the PR/MR and its merge commit, its checks,
+and whether the stage build holds the merge (`git merge-base --is-ancestor` in the project's checkout;
+unknown for a commit it lacks). Passing checks never tick a manual check; QA's result or the owner's
+acceptance closes the work. Paseo Dash has no Trello access: it links the card and says the state last
+recorded, and gives a QA handoff text to post on it.
+
+### Projects' web hosts (runtime, per machine)
+
+A GitLab project's web host is the one its forge names: GitLab's API answers `web_url` for the
+project, asked of the remote's host (then of a `web_host` set). When it differs from the host Paseo
+Dash uses (`web_host`, else the remote's), Projects and `reconcile` say so with the fix (set the web
+host, one press). Hosts that only look alike are never taken as the same. A host only the plan's links
+to the same repository name is never asked: plan text is untrusted, and `glab api --hostname` sends
+the daemon's GitLab token to the host it is given. Such a host is named for the user to check, and
+without an answer the check is said as unchecked. Read once an hour per remote, never written.
 
 ### Milestone and feature
 

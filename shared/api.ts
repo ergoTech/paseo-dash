@@ -2,7 +2,7 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { GLYPHS } from "./map.ts";
 import { ISSUE_URL_MAX } from "./issues.ts";
-import { PRIORITIES } from "./model.ts";
+import { PRIORITIES, REQUIREMENT_KINDS } from "./model.ts";
 
 /**
  * The plan's reads and writes, for the dashboard UI and for God Mode
@@ -159,6 +159,8 @@ export const tasksGetRpc = defineRpc({
     needs: z.string(),
     /** With needs: what the user can do now, as needs_you says it; else "". */
     next: z.string(),
+    /** With a live run: what it waits on (overview.running's state) and the fact; left out without one. */
+    state: z.string().optional(),
     progress: z.string(),
     blocked_by: z.string(),
     pr: z.string(),
@@ -182,6 +184,10 @@ export const tasksGetRpc = defineRpc({
     acceptance: z.array(z.object({ text: z.string(), done: z.boolean() })),
     last_message: z.string(),
     brief: z.string(),
+    /** Only when `brief` is cut: its full length; task_text reads it whole. */
+    brief_chars: z.number().int().optional(),
+    /** Only with a way to accepted work to show: "<stage>; next <who>: <what>" (delivery reads it all). */
+    delivery: z.string().optional(),
     /** The latest handoff a run's agent left for the next one, or empty. */
     handoff: z.string(),
     /**
@@ -297,7 +303,10 @@ export const startCheckRpc = defineRpc({
      * there is one, so the read-back says it. Empty without either.
      */
     issue: z.string(),
-    /** That a label of the task marks it as a person's work (the space's defaults.human_labels); empty otherwise. */
+    /**
+     * That it waits for a person: a label marks it as a person's work (defaults.human_labels), its work
+     * is merged already (reconcile), or a requirement is open; empty otherwise.
+     */
     human: z.string(),
     error: z.string(),
     /** One of START_DECISIONS: what a start of this task does now, as start_plan says it. */
@@ -525,6 +534,22 @@ export const tasksCreateRpc = defineRpc({
   }),
 });
 
+/** What update_task records of a task's way to accepted work (03-model.md, Delivery); "" clears a field. */
+export const deliveryInput = z.object({
+  stage_sha: z.string().trim().regex(/^(?:[0-9a-fA-F]{7,64})?$/, "a commit sha").optional(),
+  stage_url: z.string().trim().regex(/^(?:https:\/\/\S+)?$/, "an https URL").max(500).optional(),
+  stage_version: z.string().trim().max(80).optional(),
+  flags: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  flags_ready: z.boolean().optional(),
+  access_ready: z.boolean().optional(),
+  device: z.string().trim().max(120).optional(),
+  device_ready: z.boolean().optional(),
+  trello: z.string().trim().regex(/^(?:https:\/\/trello\.com\/c\/\S+)?$/, "a Trello card URL").max(300).optional(),
+  trello_state: z.string().trim().max(80).optional(),
+  qa: z.enum(["pending", "passed", "failed", ""]).optional(),
+  qa_note: z.string().trim().max(500).optional(),
+});
+
 export const tasksUpdateInput = z.object({
   task: name(),
   title: z.string().trim().min(1).max(200).optional(),
@@ -539,6 +564,13 @@ export const tasksUpdateInput = z.object({
   depends_on: z.array(z.string().trim().min(1)).max(20).optional().describe("Replaces the list"),
   issue: issue("Issue URL; empty takes it off"),
   agent_profile: z.string().trim().max(80).optional().describe("Agent profile name on this Mac; its model and effort start the task; empty takes it off"),
+  requires: z
+    .array(z.object({ kind: z.enum(REQUIREMENT_KINDS), reason: z.string().trim().min(1).max(200) }))
+    .max(10)
+    .optional()
+    .describe("Owner or environment needs; replaces the list"),
+  readiness_note: z.string().trim().max(300).optional().describe("The user checked it can start"),
+  delivery: deliveryInput.optional().describe("\"\" clears a field"),
   duplicate_of: optionalName("With status canceled: merge into that task"),
   status: z
     .enum(["todo", "inbox", "done", "canceled"])
@@ -730,3 +762,272 @@ export const featuresUpdateInput = z.object({
 });
 
 export const featuresUpdateRpc = defineRpc({ name: "features.update", input: featuresUpdateInput, output: entityOutput });
+
+// ---------------------------------------------------------------- reconcile (JOBBY-YV2QS)
+
+/** Acceptance lines a reconcile row names; the rest are counted in `left_count`. */
+export const RECONCILE_LEFT = 8;
+
+export const reconcileInput = z.object({
+  space,
+  task: optionalName("Asks its forge now"),
+});
+
+/**
+ * Work merged on the forge while the task stayed open (todo, a draft, or in progress with no run):
+ * the PR/MR, its merge commit and source branch, how it is tied to the task, the acceptance still
+ * open and what to do. Read only: it never changes a task. `projects`: a project whose web host is
+ * not the one its forge serves, with the fix.
+ */
+export const reconcileRpc = defineRpc({
+  name: "tasks.reconcile",
+  input: reconcileInput,
+  output: z.object({
+    tasks: z.array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        status: z.string(),
+        project: z.string(),
+        merged: z.array(
+          z.object({
+            pr: z.string(),
+            url: z.string(),
+            /** The merge's commit on the target branch; "" when the forge did not name it. */
+            sha: z.string(),
+            branch: z.string(),
+            merged_at: z.string(),
+            /** How it is tied to the task: branch, link, id_in_title, id_in_description, id_in_branch, closes_issue. */
+            by: z.string(),
+          }),
+        ),
+        /** Acceptance lines not ticked, at most RECONCILE_LEFT. */
+        left: z.array(z.string()),
+        left_count: z.number().int(),
+        next: z.string(),
+      }),
+    ),
+    projects: z.array(z.object({ space: z.string(), project: z.string(), problem: z.string() })),
+    note: z.string(),
+    error: z.string(),
+  }),
+});
+
+// ---------------------------------------------------------------- batches and full text (JOBBY-YV2QS)
+
+/** Most tasks one update_tasks changes: its read-back names each, and a retry re-reads each. */
+export const BATCH_MAX = 25;
+/** Most tasks one tasks_profiles reads. */
+export const PROFILES_READ_MAX = 50;
+/** Characters of a section one task_text answer carries; the rest is read from `next_cursor`. */
+export const TEXT_CHUNK = 4000;
+
+export const tasksProfilesInput = z.object({
+  tasks: z.array(z.string().trim().min(1).max(200)).min(1).max(PROFILES_READ_MAX),
+});
+
+/**
+ * For each task: the profile its next start uses and the model and effort that gives, apart from the
+ * model and effort of the agent that runs it now (a profile change never touches a running agent).
+ * `revision`: of the profiles as read, for update_tasks. A task not found has `error`; the rest still answer.
+ */
+export const tasksProfilesRpc = defineRpc({
+  name: "tasks.profiles",
+  input: tasksProfilesInput,
+  output: z.object({
+    tasks: z.array(
+      z.object({
+        task: z.string(),
+        id: z.string(),
+        title: z.string(),
+        status: z.string(),
+        agent_profile: z.string(),
+        /** What the next start uses: "profile Sonnet 5.5 High: claude/claude-sonnet-5-5, effort high" or the policy's pick and why. */
+        next_start: z.string(),
+        /** The agent at work on it now, as started: "claude-opus-5-5, effort high"; "" without one on this Mac. */
+        running: z.string(),
+        error: z.string(),
+      }),
+    ),
+    revision: z.string(),
+    error: z.string(),
+  }),
+});
+
+const batchItem = z.object({
+  task: name(),
+  agent_profile: z.string().trim().max(80).describe("Empty takes it off"),
+});
+
+export const updateTasksCheckInput = z.object({
+  items: z.array(batchItem).min(1).max(BATCH_MAX),
+});
+
+/** The read-back of update_tasks: each change, each refusal, and the revision the action must carry. */
+export const updateTasksCheckRpc = defineRpc({
+  name: "tasks.update-many-check",
+  input: updateTasksCheckInput,
+  output: z.object({
+    /** "ERG-1 Sonnet 5.5 High → Opus 5.5 High; ERG-2 unchanged", at most 600 characters. */
+    changes: z.string(),
+    /** Items that would be refused: unknown task or profile. */
+    refused: z.string(),
+    revision: z.string(),
+    count: z.number().int(),
+    error: z.string(),
+  }),
+});
+
+export const updateTasksInput = updateTasksCheckInput.extend({
+  revision: z.string().trim().min(1).max(40),
+  key: z.string().trim().min(8).max(80).describe("Idempotency key"),
+});
+
+/**
+ * Sets the agent profile of up to BATCH_MAX tasks; nothing else of them changes. Each item answers on
+ * its own: applied, already (it was so, or an earlier call with this key set it), refused (unknown
+ * task or profile, or someone changed it since the check) or unknown (queued while the plan syncs:
+ * call again with the same key). A checkpoint per key on this Mac keeps a retry from applying anything twice.
+ */
+export const updateTasksRpc = defineRpc({
+  name: "tasks.update-many",
+  input: updateTasksInput,
+  output: z.object({
+    ok: z.boolean(),
+    key: z.string(),
+    counts: z.object({ applied: z.number().int(), already: z.number().int(), refused: z.number().int(), unknown: z.number().int() }),
+    items: z.array(
+      z.object({
+        task: z.string(),
+        id: z.string(),
+        result: z.enum(["applied", "already", "refused", "unknown"]),
+        before: z.string(),
+        after: z.string(),
+        /** With a running agent: that it keeps its model until its next start. */
+        note: z.string(),
+        error: z.string(),
+      }),
+    ),
+    error: z.string(),
+  }),
+});
+
+export const TEXT_SECTIONS = ["brief", "acceptance", "handoff", "clarifications", "notes"] as const;
+
+export const taskTextInput = taskRef.extend({
+  section: z.enum(TEXT_SECTIONS),
+  cursor: z.number().int().min(0).max(1_000_000).optional(),
+  revision: z.string().trim().max(40).optional(),
+});
+
+/**
+ * One section of a task in full, TEXT_CHUNK characters at a time: `truncated` and `next_cursor` say
+ * there is more. `revision` is of the task's file: a cursor read against another revision is refused,
+ * so parts of two versions are never joined.
+ */
+export const taskTextRpc = defineRpc({
+  name: "tasks.text",
+  input: taskTextInput,
+  output: z.object({
+    id: z.string(),
+    section: z.string(),
+    text: z.string(),
+    cursor: z.number().int(),
+    next_cursor: z.number().int(),
+    truncated: z.boolean(),
+    total: z.number().int(),
+    revision: z.string(),
+    error: z.string(),
+  }),
+});
+
+// ---------------------------------------------------------------- start candidates (JOBBY-YV2QS)
+
+/**
+ * What the open tasks wait for, as start_candidates groups them:
+ * - agent: an agent can take it now: ready, no person's label, requirement, open question or merged work;
+ * - person: a label marks it as a person's work;
+ * - decision: an owner's decision (a requirement, or an open question in its brief);
+ * - dependencies: it waits for other tasks;
+ * - qa_environment: a requirement of an environment, a device, an access or QA;
+ * - merged: its work is merged already; what is left is acceptance (reconcile);
+ * - check: a label of it reads like a person's work, but the space does not mark it so: a person decides;
+ * - not_here: its project is not mapped on this Mac.
+ */
+export const CANDIDATE_GROUPS = ["agent", "person", "decision", "dependencies", "qa_environment", "merged", "check", "not_here"] as const;
+
+export const startCandidatesInput = z.object({
+  space,
+  group: z.enum(CANDIDATE_GROUPS).optional(),
+  limit: limit(20),
+});
+
+/**
+ * The todo tasks in the board's order, each with what it waits for and what a start would use, and
+ * this Mac's slots. Read only: it starts nothing; a start is start_task or start_tasks when the user asks.
+ */
+export const startCandidatesRpc = defineRpc({
+  name: "tasks.start-candidates",
+  input: startCandidatesInput,
+  output: z.object({
+    /** This Mac's places: active (at work, asking or being started), launching among them, stopped and review holding none, free. */
+    slots: z.object({
+      max: z.number().int(),
+      active: z.number().int(),
+      launching: z.number().int(),
+      stopped: z.number().int(),
+      review: z.number().int(),
+      free: z.number().int(),
+      /** A usage limit holding every start: until when and why; "" when none. */
+      hold: z.string(),
+    }),
+    counts: z.record(z.string(), z.number().int()),
+    tasks: z.array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        group: z.enum(CANDIDATE_GROUPS),
+        /** Its place in the board's order of the space's todo tasks, 1 first. */
+        order: z.number().int(),
+        reason: z.string(),
+        next: z.string(),
+        /** What its next start uses: its profile or the per-task pick, with the model and effort. */
+        start_with: z.string(),
+        /** When a person last checked it can start, and what they found; "" when nobody did. */
+        checked: z.string(),
+        /** Known overlap with work under way or another candidate (a shared branch); "" when none is known, which is not "none". */
+        overlap: z.string(),
+      }),
+    ),
+    total: z.number().int(),
+    note: z.string(),
+    error: z.string(),
+  }),
+});
+
+// ---------------------------------------------------------------- delivery (JOBBY-YV2QS)
+
+/** The stages of a task's way from code to accepted work (server/delivery.ts). */
+export const DELIVERY_STAGE_NAMES = ["in_work", "waiting_for_merge", "waiting_for_ci", "waiting_for_stage", "waiting_for_setup", "ready_for_qa", "qa_failed", "qa_passed", "accepted"] as const;
+
+/**
+ * A task's way from its PR/MR to accepted work: each step's state and fact, the stage it is at, who
+ * acts next and what, why Trello cannot be read from here, and a QA handoff text. Merged is not
+ * accepted: only QA's recorded result or the owner's acceptance closes it.
+ */
+export const tasksDeliveryRpc = defineRpc({
+  name: "tasks.delivery",
+  input: taskRef,
+  output: z.object({
+    id: z.string(),
+    title: z.string(),
+    stage: z.string(),
+    /** Who acts next: agent, CI, deploy, owner, QA; "" when done. */
+    next_by: z.string(),
+    next: z.string(),
+    steps: z.array(z.object({ step: z.string(), state: z.string(), fact: z.string() })),
+    trello_blocker: z.string(),
+    qa_handoff: z.string(),
+    error: z.string(),
+  }),
+});

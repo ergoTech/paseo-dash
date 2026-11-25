@@ -130,6 +130,18 @@ export class EventStore {
     return false;
   }
 
+  /**
+   * A finished turn that is no news: the agent ended it while a sub-agent of its works on, so nothing
+   * waits for the user. Its event is kept, marked read, so no count or notification shows it.
+   */
+  quiet(runId: string, at: string): boolean {
+    const event = this.events.findLast((e) => e.run_id === runId);
+    if (!event || event.kind !== "finished" || event.at !== at || event.read_at) return false;
+    event.read_at = at;
+    this.save();
+    return true;
+  }
+
   /** Marks read every unread event up to `through` (in `spaces`, when given); returns how many. */
   markRead(through: number, at: string, spaces?: Set<string>): number {
     let marked = 0;

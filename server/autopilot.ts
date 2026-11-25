@@ -4,7 +4,8 @@ import { MAX_RUNNING_CAP } from "../shared/ui.ts";
 import type { Dashboard } from "./dashboard.ts";
 import { readJsonFile, writeJsonFile } from "./json-file.ts";
 import { planStart } from "./api/reads.ts";
-import { humanWork, humanWorkOf, isHumanWorkRefusal, sortTasks, taskSection } from "./api/view.ts";
+import { isHumanWorkRefusal, sortTasks, taskSection } from "./api/view.ts";
+import { agentHold, agentHoldOf } from "./api/start-verdict.ts";
 import { startTask, type WriteContext } from "./api/writes.ts";
 import { flat, type RunActivity, runActivity } from "./needs.ts";
 import type { RunRecord } from "./runner/runs.ts";
@@ -410,8 +411,8 @@ export class Autopilot {
         this.waits.set(key, "waits: no task of this project is ready");
         continue;
       }
-      const people = ready.filter((t) => humanWork(plan, t));
-      const passed = people.length ? humanWorkOf(people.map((task) => ({ plan, task }))) : "";
+      const people = ready.filter((t) => agentHold(this.dashboard, plan, t));
+      const passed = people.length ? agentHoldOf(this.dashboard, people.map((task) => ({ plan, task }))) : "";
       for (const task of ready.filter((t) => !people.includes(t))) {
         if (!(await this.tryStart(ctx, flag.space, task, key, "project"))) continue;
         if (passed && this.waits.get(key) === "") this.waits.set(key, `started ${task.id}; passed over ${passed}`);
@@ -487,7 +488,7 @@ export class Autopilot {
       this.waits.set(key, `waits: ${task.id} is ${taskSection(this.dashboard.spaces.get(space)!.sync.plan, task)}`);
       return false;
     }
-    const human = humanWork(this.dashboard.spaces.get(space)!.sync.plan, task);
+    const human = agentHold(this.dashboard, this.dashboard.spaces.get(space)!.sync.plan, task);
     if (human) {
       this.waits.set(key, `waits: ${task.id}: ${human}; start it from its own screen to give it to an agent`);
       return false;

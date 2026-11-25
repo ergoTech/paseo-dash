@@ -1,5 +1,5 @@
 import { hasLiveRun, type Task } from "../shared/model.ts";
-import type { NeedsKind, Overview } from "../shared/overview.ts";
+import type { NeedsKind, Overview, WaitState } from "../shared/overview.ts";
 import type { Dashboard } from "./dashboard.ts";
 import type { RunRecord } from "./runner/runs.ts";
 import { cut, localHost, localRun } from "./api/view.ts";
@@ -17,6 +17,8 @@ export type RunActivity = Overview["running"][number]["activity"];
 
 export interface Need {
   kind: NeedsKind;
+  /** The chat the user answers in when it is not the run's own agent's: a sub-agent asking. */
+  chatId?: string;
   /** The fact, one line of at most WHY_CHARS: the agent's request or error, the PR/MR, the landed reading. */
   why: string;
   /** What the user can do about it now. */
@@ -43,6 +45,65 @@ const NEXT = {
 } as const;
 
 export const SYNC_NEXT = NEXT.sync;
+
+export type { WaitState } from "../shared/overview.ts";
+
+/** How long a wait the agent reported (task_report waiting_for) counts with no fact behind it. */
+const REPORTED_WAIT_MS = 30 * 60_000;
+
+/** Sub-agents of the run at work: Paseo's child agents and sub-agent calls on its timeline. */
+export function subAgentsAtWork(dashboard: Dashboard, run: RunRecord): number {
+  return (dashboard.waits.facts.get(run.run_id)?.working ?? 0) + dashboard.follower.runningSubAgents(run.run_id);
+}
+
+/**
+ * What an idle agent of a task in progress waits on besides the user, from facts: its sub-agents at
+ * work, its PR/MR's checks running, or a wait it reported that no fact contradicts (CI not finished)
+ * and that is recent. Undefined when nothing shows one: then it waits for the user.
+ */
+function idleWait(dashboard: Dashboard, run: RunRecord, now: number): { state: WaitState; note: string } | undefined {
+  const subs = subAgentsAtWork(dashboard, run);
+  if (subs) return { state: "subagent_working", note: `${subs === 1 ? "a sub-agent" : `${subs} sub-agents`} of it at work` };
+  const checks = dashboard.waits.facts.get(run.run_id)?.checks;
+  if (checks === "pending" || checks === "waiting") return { state: "waiting_for_ci", note: `its PR/MR's checks are ${checks}` };
+  const said = run.waitingOn;
+  if (!said || said.kind === "user" || !(now - Date.parse(said.at) < REPORTED_WAIT_MS)) return undefined;
+  const note = said.note ? `: ${said.note}` : "";
+  if (said.kind === "ci" && checks !== "passing" && checks !== "failing") return { state: "waiting_for_ci", note: flat(`it said it waits for CI${note}`) };
+  if (said.kind === "review") return { state: "waiting_for_review", note: flat(`it said it waits for a review${note}`) };
+  if (said.kind === "subagent") return { state: "subagent_working", note: flat(`it said its sub-agents work${note}`) };
+  return undefined;
+}
+
+/** A task's state as the waits name it, with a short fact: what overview.running and the task screen show. */
+export function waitState(dashboard: Dashboard, task: Task, host = localHost(), now = Date.now()): { state: WaitState; note: string } {
+  const run = localRun(dashboard.runs, task);
+  const need = needOf(dashboard, task, host, now);
+  if (need?.kind === "question") return { state: "needs_user_question", note: need.why };
+  if (need?.kind === "permission") return { state: "approval", note: need.why };
+  if (need?.kind === "failed") return { state: "failed", note: need.why };
+  if (need?.kind === "checkout") return { state: "checkout", note: need.why };
+  if (need?.kind === "stopped") return { state: run ? "stopped" : "record_lost", note: need.why };
+  if (need?.kind === "answer") return { state: run?.waitingOn?.kind !== "user" && /^blocked: /.test(task.progress_note ?? "") ? "blocked" : "answer", note: need.why };
+  if (!run) return task.run_host !== host ? { state: "elsewhere", note: `on ${task.run_host ?? "another machine"}` } : { state: claiming(dashboard, task) ? "launching" : "record_lost", note: "" };
+  if (run.activity === "launching") return { state: "launching", note: "" };
+  if (run.activity === "waiting" && task.status === "in_progress") return idleWait(dashboard, run, now) ?? { state: "answer", note: "" };
+  if (run.activity === "waiting" && task.status === "review") return { state: "waiting_for_review", note: "its work is in review" };
+  if (run.activity === "stopped") return { state: "stopped", note: "" };
+  return { state: "working", note: "" };
+}
+
+/** What a stopped run left: its PR/MR, its handoff and the acceptance still open, in one line. */
+function leftBehind(dashboard: Dashboard, task: Task): string {
+  const seen = dashboard.prs.seen.get(task.id);
+  const pr = seen && seen.run_id === task.run_id ? `${seen.label} ${seen.state}` : task.run_pr ? task.run_pr.replace(/^https:\/\/[^/]+\//, "") : "no PR/MR";
+  let loaded: { acceptance: { done: boolean }[]; handoff?: { at: string } } | undefined;
+  for (const { sync } of dashboard.spaces.values()) loaded ??= sync.plan.entities.get(task.id);
+  const open = loaded?.acceptance.filter((a) => !a.done).length ?? 0;
+  const total = loaded?.acceptance.length ?? 0;
+  const handoff = loaded?.handoff ? `handoff ${loaded.handoff.at.slice(0, 16).replace("T", " ")}` : "no handoff";
+  return `${pr}; ${handoff}; ${total ? `${open} of ${total} acceptance lines open` : "no acceptance"}`;
+}
 
 /** Where to talk to the run's agent: its chat when it is this Mac's, else the machine it runs on. */
 function talk(task: Task, run: RunRecord | undefined): string {
@@ -111,7 +172,7 @@ export function runActivity(dashboard: Dashboard, task: Task, host = localHost()
  * on); then a review with no PR/MR. In review an agent may well have closed once its PR/MR was open:
  * that task waits for the merge.
  */
-export function needOf(dashboard: Dashboard, task: Task, host = localHost()): Need | undefined {
+export function needOf(dashboard: Dashboard, task: Task, host = localHost(), now = Date.now()): Need | undefined {
   if (!hasLiveRun(task)) return undefined;
   const run = localRun(dashboard.runs, task);
   const seen = dashboard.prs.seen.get(task.id);
@@ -123,6 +184,12 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost()): Ne
     const kind = run.waitingKind === "question" ? "question" : "permission";
     return need(kind, flat(run.waitingFor ?? "waits for your answer"), NEXT[kind], run.activityAt);
   }
+  // A sub-agent's question or permission is the user's as much as the agent's own: a child at work never hides it.
+  const child = run && run.activity !== "stopped" ? dashboard.waits.facts.get(run.run_id)?.asking : undefined;
+  if (child) {
+    const kind = child.kind === "question" ? "question" : "permission";
+    return { ...need(kind, flat(`a sub-agent asks: ${child.text}`), kind === "question" ? NEXT.question.replace("the agent's chat", "the sub-agent's chat") : "answer it in the sub-agent's chat", run!.activityAt), chatId: child.agentId };
+  }
   if (run?.activity === "failed") return need("failed", flat(run.error ?? "the agent failed"), NEXT.failed, run.activityAt);
   if (own?.state === "merged") {
     const left =
@@ -132,9 +199,14 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost()): Ne
     return need("merged", flat(`${own.label} ${own.note ?? "merged"}`), left);
   }
   if (open && run?.activity === "waiting") {
+    // Idle is not by itself a question to the user: sub-agents at work, running checks or a wait the
+    // agent reported (and nothing contradicts) leave nothing to answer (server/wait.ts).
+    if (idleWait(dashboard, run, now)) return undefined;
+    const blocked = /^blocked: /.test(task.progress_note ?? "") ? task.progress_note! : "";
+    const said = run.waitingOn?.kind === "user" ? `it asks for your answer${run.waitingOn.note ? `: ${run.waitingOn.note}` : ""}` : "";
     return need(
       "answer",
-      run.lastMessage ? `the agent waits: ${flat(run.lastMessage)}` : "the agent finished its turn and waits for you",
+      blocked ? `the agent is ${flat(blocked)}` : said ? flat(said) : run.lastMessage ? `the agent waits: ${flat(run.lastMessage)}` : "the agent finished its turn and waits for you",
       "reply in the agent's chat; if the work is finished, release the task to done",
       run.activityAt,
     );
@@ -148,9 +220,10 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost()): Ne
     if (run.adopted?.trunk) {
       return need("checkout", flat(`${none ? "tracked without an agent" : "its agent is gone, a tracked checkout's normal end"}; ${landedText(run)}`), checkoutNext(run), run.activityAt);
     }
-    return need("stopped", none ? "tracked on this Mac without an agent in its workspace" : "its agent is gone while the task is still open", NEXT.stopped, run.activityAt);
+    return need("stopped", flat(`${none ? "tracked on this Mac without an agent in its workspace" : "its agent is gone while the task is still open"}; ${leftBehind(dashboard, task)}`), NEXT.stopped, run.activityAt);
   }
-  if (open && !run && task.run_host === host && !claiming(dashboard, task)) return need("stopped", "started on this Mac, but this Mac has no record of its agent", NEXT.stopped);
+  // Not a run that ended: this Mac lost the record of its agent (runs.json moved aside, another Paseo home).
+  if (open && !run && task.run_host === host && !claiming(dashboard, task)) return need("stopped", flat(`started on this Mac, but this Mac has no record of its agent (not an ended run); ${leftBehind(dashboard, task)}`), NEXT.stopped);
   if (task.status === "review" && !own && !task.run_pr) {
     // A PR/MR the agent named is checked by the tracker; until it answers (or with no gh/glab
     // here) its state is unknown, which is said rather than "without a PR/MR".

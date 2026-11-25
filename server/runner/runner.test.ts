@@ -62,7 +62,7 @@ test("a start claims, then creates the worktree and the agent with the run's lab
     const read = getTask(s.ctx, { task: "TST-FX001" });
     assert.deepEqual([read.activity, read.chat_id], ["working on this Mac", agent!.id]);
     const overview = readOverview(s.dashboard, {});
-    assert.deepEqual(overview.running.find((r) => r.task === "TST-FX001"), { task: "TST-FX001", title: "Fix flaky login test", activity: "working", host: "ergo-mbp", chat_id: agent!.id, since: s.task("TST-FX001")!.run_started });
+    assert.deepEqual(overview.running.find((r) => r.task === "TST-FX001"), { task: "TST-FX001", title: "Fix flaky login test", activity: "working", state: "working", host: "ergo-mbp", chat_id: agent!.id, since: s.task("TST-FX001")!.run_started });
     assert.deepEqual(readOverview(s.dashboard, { limit: 1 }).running.length, 1, "a screen may ask for more or fewer than ten");
     assert.equal(overview.counts.running, 2, "anna's live run counts too");
   } finally {
