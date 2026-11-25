@@ -283,7 +283,7 @@ export const inboxListRpc = defineRpc({
 });
 
 export const startCheckInput = taskRef.extend({
-  profile: optionalName("Agent profile; empty: the default"),
+  profile: optionalName("Only if the user named one; empty: the task's, space's or this Mac's choice"),
 });
 
 export const startCheckRpc = defineRpc({
@@ -514,6 +514,7 @@ export const tasksCreateInput = z.object({
     .optional()
     .describe("Checklist lines"),
   status: z.enum(["todo", "inbox"]).optional(),
+  agent_profile: z.string().trim().max(80).optional().describe("Only if the user named one: its model and effort start the task"),
   /** false: To Do only; absent: this Mac's "Start new ready tasks" (server/auto-start.ts). create_task's description says it. */
   start: z.boolean().optional(),
 });

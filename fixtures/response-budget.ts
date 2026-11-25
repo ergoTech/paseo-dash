@@ -6,7 +6,7 @@ import { RESPONSES, type ResponseName, type ResponseSizes } from "./response-siz
  * shrinks a reply lowers its number, or the room it freed can fill up again unnoticed.
  */
 export const MEASURED: ResponseSizes = {
-  "meta.describe": 21380,
+  "meta.describe": 21910,
   overview: 5837,
   tasks: 4906,
   tasks_query: 6895,

@@ -359,6 +359,40 @@ should start at once, in Auto mode with effort High, without anyone pressing Sta
   that task, whose read-back the user answers. `START_RULES` and the descriptions say that a task
   created ready asks for its own start unless the user wanted To Do only.
 
+### Tasks and chats from voice
+
+Asked for by the user (task JOBBY-YDNB7): new project work asked by voice becomes a Paseo Dash task,
+and the model follows the task however it is started.
+
+- **A task, not a chat.** The description of `create_task` says project work, by voice too, is a task
+  with a short brief and concrete acceptance lines, and a chat is started only when the user asks for
+  one. A ready task then starts as in [Starting new tasks](#starting-new-tasks).
+- **Dash picks the model.** A profile the user names goes with the task (`create_task`'s
+  `agent_profile`), so a start queued by that create uses it; for a task that exists it is set with
+  `update_task` or `update_tasks`, or passed to `start_task` as `profile`. Without one the task's
+  profile applies, else the space's, else, on a Mac whose first provider is Claude and with "Pick
+  Claude's model and effort per task" on, the pick by the task's own text
+  (`server/runner/model-policy.ts`, [05-architecture.md](05-architecture.md#starting-a-task)), else
+  the provider's default model. A task with no acceptance lines is `complex` in that pick, so the
+  lines also decide the model.
+- **A direct chat gets no pick.** God Mode's `start_chat` does not go through this plugin. For a
+  Claude chat where the user named no runtime, model or effort, the same description tells ChatGPT to
+  pass `model` and `thinking` by the same three tiers, judged by hand:
+
+  | Work | `model` | `thinking` |
+  |---|---|---|
+  | A clear local fix | `claude-sonnet-5-5` | `medium` |
+  | Harder local work | `claude-sonnet-5-5` | `high` |
+  | Unclear, architecture, more than one repository, or high risk | `claude-opus-5-5` | `high` |
+
+  This is guidance in a description, not a check, with these limits. No handler of this plugin sees a
+  direct chat. ChatGPT reads the sentence only once it has read this plugin, so a chat asked first
+  may start without it. God Mode's own `start_chat` description (seen in 0.17.0 and 1.1.1) says to set
+  model and thinking only when the user asks for them, and ChatGPT may follow that instead. Passing
+  them also overrides the new-chat defaults of God Mode's Site, where it has any. A user who needs the
+  rule on every chat says it in ChatGPT's own instructions. Independent review stays as the
+  repository's own process says.
+
 ### Plan edits while the issue mirror is on
 
 Decided by the user on 2026-10-27: plan edits stay `low` (option 1 of the three laid out when the
@@ -1055,6 +1089,7 @@ input: {
   acceptance?: string[];               // up to 30 one-line checklist items, up to 500 chars each
   issue?: string;                      // a GitHub/GitLab issue's web URL; refused when another task carries it
   status?: "todo" | "inbox";           // default "todo" when a project is given, else "inbox"
+  agent_profile?: string;              // an agent profile of this Mac; an unknown one creates nothing
   start?: boolean;                     // false: To Do only; absent: this Mac's "Start new ready tasks"
 }
 output: {
@@ -1265,7 +1300,7 @@ ChatGPT → answer_approval {chat: "c3d4…", decision: "allow"}
       "method": "tasks.start-check",
       "title": "Can this task start",
       "description": "Whether one task can start here now, and how: branch, workspace, profile, mode (the agent's permission mode, not a permission to start). human: a person's work. error: why not.",
-      "input": {"type":"object","properties":{"task":{"type":"string"},"profile":{"description":"Agent profile; empty: the default","type":"string"}},"required":["task"]},
+      "input": {"type":"object","properties":{"task":{"type":"string"},"profile":{"description":"Only if the user named one; empty: the task's, space's or this Mac's choice","type":"string"}},"required":["task"]},
       "outcome": {"error":"error"},
       "untrusted": true
     },
@@ -1275,7 +1310,7 @@ ChatGPT → answer_approval {chat: "c3d4…", decision: "allow"}
       "method": "tasks.start",
       "title": "Start a task",
       "description": "Start a todo task here: a worktree on its branch, an agent with its brief. Only when the user asks to start this task, or create_task answered asks_first for it. Say confirm_text, ask nothing else: the user's yes in this chat, or the start asked again after it, confirms it; no dialog elsewhere. Only the user stops read-backs (Paseo Dash: Start tasks without asking); you cannot. Several: start_tasks.",
-      "input": {"type":"object","properties":{"task":{"type":"string"},"profile":{"description":"Agent profile; empty: the default","type":"string"}},"required":["task"]},
+      "input": {"type":"object","properties":{"task":{"type":"string"},"profile":{"description":"Only if the user named one; empty: the task's, space's or this Mac's choice","type":"string"}},"required":["task"]},
       "risk": "outward",
       "confirmText": "Start «{target.title}» in {target.project} on branch {target.branch}: an agent with profile {target.profile}, in mode {target.mode}, will work on it in {target.workspace}. Instructions: {target.instructions}. {target.issue} Start it?",
       "outcome": {"ok":"ok","error":"error"},

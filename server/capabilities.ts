@@ -382,7 +382,7 @@ export const OPERATIONS: OperationSpec[] = [
     contract: tasksCreateRpc,
     title: "Create a task",
     description:
-      "Todo with a project, else a draft. issue: its PR/MR closes it on merge; one issue, one task. Ready todo: start is queued (starts once here) or asks_first (call start_task now); say start_note. start:false: To Do only, also with open questions.",
+      "A chat only if asked: project work, by voice too, is a task here with a short brief and concrete acceptance. Todo with a project, else a draft. issue: its PR/MR closes it on merge; one issue, one task. Ready todo: start is queued (starts once here) or asks_first (call start_task now); say start_note. start:false: To Do only, also with open questions. start_chat on Claude, no runtime, model or effort named: pass model, thinking: clear local fix claude-sonnet-5-5 medium; harder local claude-sonnet-5-5 high; unclear, architecture, cross-repo or risky claude-opus-5-5 high.",
     input: tasksCreateInput,
     risk: "low",
     outcome: ACTION_OUTCOME,
