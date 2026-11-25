@@ -3,7 +3,7 @@ import { plannedBranch } from "../api/view.ts";
 import type { Plan } from "../plan/load.ts";
 import { SAFE_BRANCH } from "../sync/git.ts";
 import type { SpaceSync } from "../sync/space-sync.ts";
-import { type ForgeCli, type ForgePr, prUrlOfProject } from "./forge.ts";
+import { type ForgeCli, type ForgePr, MERGED_LIST, prUrlOfProject } from "./forge.ts";
 
 /**
  * How a merged PR/MR is tied to a task, each checked in the task's own project only: its branch (the
@@ -37,6 +37,8 @@ export interface MergedPr {
   sha?: string;
   /** The PR/MR's own source branch. */
   branch?: string;
+  /** Ids of other tasks its title or source branch names: whose work it may be instead. */
+  names?: string[];
   by: MatchedBy[];
 }
 
@@ -107,6 +109,14 @@ export function mergedCandidates(plan: Plan, task: Task): MergedCandidates | und
   };
 }
 
+/** An id as a text may name it, in any case (branch names spell it in lower case). */
+const ANY_ID = /(?<![A-Za-z0-9])[A-Za-z]{2,6}-[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{5}(?![A-Za-z0-9])/g;
+
+/** Every task id a text names, upper-cased, each once; a word of the same shape counts too, so check it against the plan. */
+export function namedIds(text: string): string[] {
+  return [...new Set((text.match(ANY_ID) ?? []).map((id) => id.toUpperCase()))];
+}
+
 /** The task's id as a token of a text: not part of a longer id or word; any case (branches are lower case). */
 function idIn(text: string | undefined, id: string): boolean {
   if (!text) return false;
@@ -135,7 +145,7 @@ export class MergedTracker {
   /** When each task was last asked for, answered or not: a task screen does not ask again before FRESH_MS. */
   private readonly asked = new Map<string, number>();
   /** Each project's latest merges as the last pass read them, by `<space>:<project>`; absent when the forge did not answer. */
-  private readonly recent = new Map<string, { at: number; prs: ForgePr[] }>();
+  private readonly recent = new Map<string, { at: number; prs: ForgePr[]; cut: boolean }>();
 
   constructor(options: MergedTrackerOptions) {
     this.options = options;
@@ -202,8 +212,9 @@ export class MergedTracker {
     const projectId = space.mapping[wanted.project];
     const root = projectId ? this.options.projectRoot(projectId) : undefined;
     if (!root) return;
-    const prs = await this.options.forge.merged(root, wanted.remote);
-    if (prs && !this.stopped) this.recent.set(recentKey(space, wanted.project), { at: this.now().getTime(), prs });
+    let cut = false;
+    const prs = await this.options.forge.merged(root, wanted.remote, { listed: (count) => (cut = count >= MERGED_LIST) });
+    if (prs && !this.stopped) this.recent.set(recentKey(space, wanted.project), { at: this.now().getTime(), prs, cut });
   }
 
   /**
@@ -257,7 +268,7 @@ export class MergedTracker {
       else unanswered += 1;
     }
     if (this.stopped) return;
-    const merged = mergedAfter(found, task.created!);
+    const merged = mergedAfter(found, task.created!, task.id);
     // A forge that did not answer leaves the last reading; a merge it did name is shown at once.
     if (!merged.length && unanswered) return;
     this.seen.set(task.id, { key: wanted.key, at: this.now().toISOString(), merged });
@@ -275,6 +286,28 @@ export class MergedTracker {
     const at = Math.max(Date.parse(view?.at ?? "") || 0, this.asked.get(task.id) ?? 0);
     if (!this.stopped && this.timer && this.now().getTime() - at >= FRESH_MS) void this.check(space, task).catch(() => undefined);
     return view && view.key === wanted.key ? view.merged : [];
+  }
+
+  /** This machine's reading of a task as it is now, its time included; undefined when it has none. */
+  readingOf(plan: Plan, task: Task): MergedView | undefined {
+    const view = this.seen.get(task.id);
+    return view && mergedCandidates(plan, task)?.key === view.key ? view : undefined;
+  }
+
+  /**
+   * The latest merges of a project of a space as a pass last read them: when, and when the list is cut
+   * short, how far back it goes (`since`, its oldest merge). Undefined when no pass read them.
+   */
+  listing(space: string, project: string): { at: string; since?: string } | undefined {
+    const list = this.recent.get(`${space}:${project}`);
+    if (!list) return undefined;
+    const since = list.cut ? list.prs.map((pr) => pr.mergedAt ?? "").filter(Boolean).sort()[0] : undefined;
+    return { at: new Date(list.at).toISOString(), ...(since ? { since } : {}) };
+  }
+
+  /** A PR/MR by its URL among a project's latest merges, as the last pass read them; never asks the forge. */
+  listed(space: string, project: string, url: string): ForgePr | undefined {
+    return this.recent.get(`${space}:${project}`)?.prs.find((pr) => pr.url === url);
   }
 
   /** The reading of a task as a list shows it: never asks the forge (`peek` does, once per pass). */
@@ -295,16 +328,18 @@ function recentKey(space: { sync: SpaceSync }, project: string): string {
  * The merged PR/MRs of `found` merged after the task was created, each once with every way it was
  * tied to the task; pure. Newest merge first.
  */
-export function mergedAfter(found: (ForgePr | { pr: ForgePr; by: MatchedBy[] })[], created: string): MergedPr[] {
+export function mergedAfter(found: (ForgePr | { pr: ForgePr; by: MatchedBy[] })[], created: string, self = ""): MergedPr[] {
   const since = Date.parse(created);
   const out = new Map<string, MergedPr>();
   for (const item of found) {
     const { pr, by } = "pr" in item ? item : { pr: item, by: [] as MatchedBy[] };
     const at = Date.parse(pr.mergedAt ?? "");
     if (pr.state !== "merged" || !Number.isFinite(at) || !Number.isFinite(since) || at <= since) continue;
+    const names = namedIds(`${pr.title ?? ""}\n${pr.head ?? ""}`).filter((id) => id !== self);
     const seen = out.get(pr.url);
     if (seen) {
       for (const way of by) if (!seen.by.includes(way)) seen.by.push(way);
+      if (names.length) seen.names = [...new Set([...(seen.names ?? []), ...names])];
       continue;
     }
     out.set(pr.url, {
@@ -313,6 +348,7 @@ export function mergedAfter(found: (ForgePr | { pr: ForgePr; by: MatchedBy[] })[
       merged_at: pr.mergedAt!,
       ...(pr.mergeSha ? { sha: pr.mergeSha } : {}),
       ...(pr.head ? { branch: pr.head } : {}),
+      ...(names.length ? { names } : {}),
       by: [...by],
     });
   }

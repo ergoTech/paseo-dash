@@ -34,7 +34,7 @@ const PERSON_LIKE = ["manual", "needs-owner", "owner", "live-check", "human", "p
 const DECISION: RequirementKind[] = ["owner", "decision"];
 
 /** The group, why and what to do: the first thing that holds the task, as the module comment orders them. */
-function classify(ctx: ReadContext, plan: Plan, task: Task, mapped: boolean, brief: string): { group: Group; reason: string; next: string } {
+export function classify(ctx: ReadContext, plan: Plan, task: Task, mapped: boolean, brief: string): { group: Group; reason: string; next: string } {
   const waits = blockers(plan, task);
   if (waits.length) return { group: "dependencies", reason: cut(`waits for ${waits.join("; ")}`, 200), next: "finish or start what it waits for first" };
   const human = humanWork(plan, task);

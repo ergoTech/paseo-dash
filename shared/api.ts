@@ -1006,6 +1006,118 @@ export const startCandidatesRpc = defineRpc({
   }),
 });
 
+// ---------------------------------------------------------------- ready review
+
+/**
+ * How much of an open card is covered already:
+ * - confirmed: its own PR/MR is merged, every acceptance line is ticked and QA has not failed;
+ * - partial: its own facts cover some of it: its merged PR/MR, or ticked lines;
+ * - possible: only signals: open lines worded like lines ticked on another card, a card that looks
+ *   like the same work, a PR/MR that may be its own, or an earlier run's handoff;
+ * - none: nothing found, which is not proof there is nothing (see `incomplete`).
+ */
+export const REVIEW_COVERAGE = ["confirmed", "partial", "possible", "none"] as const;
+
+/**
+ * What remains: accept (mark it done), qa (code merged, lines open), fix (QA failed), check (find or
+ * check the work behind it), compare (with another card), implementation.
+ */
+export const REVIEW_LEFT = ["accept", "qa", "fix", "check", "compare", "implementation"] as const;
+
+/** Open acceptance lines a card names, related cards it lists, and matched lines per related card. */
+export const REVIEW_OPEN = 6;
+export const REVIEW_RELATED = 3;
+export const REVIEW_MATCHES = 3;
+/** Roots one answer lists, and blocked ids each names. */
+export const REVIEW_ROOTS = 5;
+export const REVIEW_BLOCKED = 12;
+
+export const readyReviewInput = z.object({
+  space,
+  project: optionalName("Project key"),
+  task: optionalName("One card; asks its forge now"),
+  limit: limit(8),
+});
+
+const reviewPr = z.object({ pr: z.string(), url: z.string(), state: z.string(), tie: z.string() });
+
+/**
+ * The review of the open cards before a start, in a space or one of its projects: per card what
+ * covers it already and how that is known, what stays open and the next step; and the dependency
+ * roots, each with how many cards it holds back. Read only: it changes no status, closes no card and
+ * starts no agent.
+ */
+export const readyReviewRpc = defineRpc({
+  name: "tasks.ready-review",
+  input: readyReviewInput,
+  output: z.object({
+    note: z.string(),
+    /** One short line per listed card, in the cards' order: what a spoken answer has room for. */
+    summary: z.array(z.string()),
+    /** Cards by coverage, and `incomplete`: cards with data missing. */
+    counts: z.record(z.string(), z.number().int()),
+    roots: z.array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        status: z.string(),
+        project: z.string(),
+        /** Open cards of the scope waiting for it, directly or through others, and how many directly. */
+        blocks: z.number().int(),
+        direct: z.number().int(),
+        blocked: z.array(z.string()),
+        next: z.string(),
+      }),
+    ),
+    roots_total: z.number().int(),
+    tasks: z.array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        project: z.string(),
+        status: z.string(),
+        /** Its start_candidates group; "" for a card that is not waiting to start. */
+        group: z.string(),
+        coverage: z.enum(REVIEW_COVERAGE),
+        /** What the coverage rests on: own (the card's own facts), similar (another card's text, a signal); "". */
+        basis: z.enum(["own", "similar", ""]),
+        evidence: z.array(z.string()),
+        /** The card's own PR/MRs, and those only possibly its own; `tie` says which and why. */
+        prs: z.array(reviewPr),
+        acceptance: z.object({ done: z.number().int(), total: z.number().int() }),
+        /** Open acceptance lines, at most REVIEW_OPEN. */
+        open: z.array(z.string()),
+        /** Cards of the same project that look like the same work: signals to compare, never proof. */
+        related: z.array(
+          z.object({
+            id: z.string(),
+            title: z.string(),
+            status: z.string(),
+            signals: z.array(z.string()),
+            prs: z.array(z.object({ pr: z.string(), url: z.string(), state: z.string() })),
+            /** How many open lines of this card read like lines ticked on that one, with some of them. */
+            matched: z.number().int(),
+            matches: z.array(z.object({ open: z.string(), theirs: z.string() })),
+          }),
+        ),
+        left: z.enum(REVIEW_LEFT),
+        next: z.string(),
+        waits_for: z.array(z.string()),
+        /** The roots of those waits: where to begin. */
+        roots: z.array(z.string()),
+        /** What could not be read or compared: the card's coverage may be wrong where it says so. */
+        incomplete: z.array(z.string()),
+        /** When this Mac last read the card's merged PR/MRs; "" when it has no reading. */
+        read_at: z.string(),
+      }),
+    ),
+    total: z.number().int(),
+    /** Project keys of the spaces reviewed, to narrow by. */
+    projects: z.array(z.string()),
+    error: z.string(),
+  }),
+});
+
 // ---------------------------------------------------------------- delivery (JOBBY-YV2QS)
 
 /** The stages of a task's way from code to accepted work (server/delivery.ts). */

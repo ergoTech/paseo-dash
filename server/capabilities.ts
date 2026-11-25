@@ -43,6 +43,8 @@ import {
   reconcileRpc,
   startCandidatesInput,
   startCandidatesRpc,
+  readyReviewInput,
+  readyReviewRpc,
   taskTextInput,
   taskTextRpc,
   tasksDeliveryRpc,
@@ -212,6 +214,18 @@ export const OPERATIONS: OperationSpec[] = [
     description: "Todo tasks in board order by what holds them, with this Mac's places. Starts nothing.",
     input: startCandidatesInput,
     fields: ["slots", "counts", "tasks", "note"],
+    outcome: READ_OUTCOME,
+    untrusted: true,
+  },
+  {
+    id: "ready_review",
+    kind: "read",
+    contract: readyReviewRpc,
+    title: "Review before starting",
+    description:
+      "Per open card: coverage (only confirmed is done), related cards, PR/MRs, open criteria, next; roots: what holds most cards. Changes nothing.",
+    // No output.fields: the answer's own order (note, counts, roots, then cards) is what God Mode reads out.
+    input: readyReviewInput,
     outcome: READ_OUTCOME,
     untrusted: true,
   },

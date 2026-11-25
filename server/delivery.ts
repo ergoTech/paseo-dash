@@ -61,13 +61,18 @@ interface MergeFact {
   sha: string;
 }
 
+/** How a person names a PR/MR by its URL: `#7`, `!12`; the URL itself when it names no number. */
+export function prLabel(url: string): string {
+  return url.replace(/^.*\/(?:pull\/|merge_requests\/)(\d+)\/?$/, (_, n: string) => (url.includes("/pull/") ? `#${n}` : `!${n}`));
+}
+
 /** The task's PR/MR as this Mac knows it: its run's, else merged work found for it (reconcile). */
 function mergeOf(dashboard: Dashboard, plan: Plan, task: Task): MergeFact | undefined {
   const merged = dashboard.merged.shown(plan, task)[0];
   if (merged) return { label: merged.label, url: merged.url, state: "merged", sha: merged.sha ?? "" };
   const seen = dashboard.prs.seen.get(task.id);
   if (seen && seen.run_id === task.run_id) return { label: seen.label, url: seen.url, state: seen.state, sha: "" };
-  if (task.run_pr) return { label: task.run_pr.replace(/^.*\/(?:pull\/|merge_requests\/)(\d+)\/?$/, (_, n: string) => (task.run_pr!.includes("/pull/") ? `#${n}` : `!${n}`)), url: task.run_pr, state: task.status === "done" ? "merged" : "recorded", sha: "" };
+  if (task.run_pr) return { label: prLabel(task.run_pr), url: task.run_pr, state: task.status === "done" ? "merged" : "recorded", sha: "" };
   return undefined;
 }
 
