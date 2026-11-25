@@ -14,6 +14,7 @@ import { START_RULES } from "./api/start-set.ts";
 import { autopilotReadRpc, autopilotSetRpc } from "../shared/ui.ts";
 import { VERSION } from "../shared/version.ts";
 import { compactSchema, describeDashboard, describeRpc, identity, OPERATIONS, operations } from "./capabilities.ts";
+import { TIER_SETTINGS } from "./runner/model-policy.ts";
 import { DEV, PLUGIN_NAME } from "../shared/edition.ts";
 import { Dashboard } from "./dashboard.ts";
 import { readOverview } from "./overview.ts";
@@ -260,6 +261,25 @@ test("every description and read-back fits the 600 characters God Mode keeps, wi
     for (const op of describeDashboard(on).operations) {
       assert.ok((op.description ?? "").length <= 600, `${op.id}: description ${op.description?.length}`);
       if (op.confirmText) assert.ok(op.confirmText.length <= 600, `${op.id}: confirmText ${op.confirmText.length}`);
+    }
+  }
+});
+
+test("work from voice is filed as a task, and a direct chat picks by the model policy's tiers (JOBBY-YDNB7)", () => {
+  for (const on of [false, true]) {
+    const op = (id: string) => describeDashboard(on).operations.find((o) => o.id === id)!;
+    const said = op("create_task").description!;
+    assert.match(said, /^A chat only if asked: project work, by voice too, is a task here with a short brief and concrete acceptance\./);
+    assert.match(said, /start_chat on Claude, no runtime, model or effort named: pass model, thinking/);
+    assert.ok("agent_profile" in (op("create_task").input as { properties: object }).properties, "a profile the user names goes with the task");
+    const { clear, localized, complex } = TIER_SETTINGS;
+    assert.ok(said.includes(`clear local fix ${clear.model} ${clear.effort};`), "the clear tier");
+    assert.ok(said.includes(`harder local ${localized.model} ${localized.effort};`), "the localized tier");
+    assert.ok(said.includes(`unclear, architecture, cross-repo or risky ${complex.model} ${complex.effort}.`), "the complex tier");
+    for (const id of ["start_check", "start_task"]) {
+      const profile = (op(id).input as { properties: { profile: { description: string } } }).properties.profile.description;
+      assert.match(profile, /^Only if the user named one/);
+      assert.ok(profile.length <= 80, `God Mode shows 80 characters of an argument's description: ${profile.length}`);
     }
   }
 });

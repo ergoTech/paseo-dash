@@ -144,6 +144,13 @@ Mac's task agents did meanwhile (finished, failed, waiting for you) and `mark_ev
 them told; ChatGPT gets them when asked, since God Mode cannot reach a chat unasked. The contract
 is in [06-god-mode.md](docs/design/task-manager-v1/06-god-mode.md).
 
+ChatGPT is told to file project work, asked by voice too, as a task with a short brief and concrete
+acceptance lines unless you ask for a chat. A profile you name goes with the task; otherwise the
+task's or the space's profile applies, else this Mac's model pick or defaults. A separate chat gets no
+pick: the description asks ChatGPT to choose Claude's model and effort by the same tiers, which is
+guidance it may not follow
+([Tasks and chats from voice](docs/design/task-manager-v1/06-god-mode.md#tasks-and-chats-from-voice)).
+
 ## Development
 
 ```sh

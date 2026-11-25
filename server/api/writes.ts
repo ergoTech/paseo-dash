@@ -397,6 +397,21 @@ export async function addDrafts(ctx: WriteContext, space: SpaceEntry, drafts: Dr
 
 type TaskCreate = RpcOutput<typeof tasksCreateRpc>;
 
+/** A profile is named as this Mac's Paseo has it, so a typo is refused when it is written and not at the task's start. */
+async function knownProfile(ctx: WriteContext, asked: string): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+  const paseo = ctx.dashboard.paseo;
+  if (!paseo) return { ok: false, error: "Paseo is not connected yet; try again in a moment." };
+  let known: { name: string }[];
+  try {
+    known = (await ctx.dashboard.profiles.load(paseo)).profiles;
+  } catch (error) {
+    return { ok: false, error: `The agent profiles of this Mac could not be read: ${error instanceof Error ? error.message : String(error)}.` };
+  }
+  const found = known.find(({ name }) => name.toLowerCase() === asked.toLowerCase());
+  if (found) return { ok: true, name: found.name };
+  return { ok: false, error: `There is no agent profile «${asked}» on this Mac${known.length ? `; profiles: ${known.map(({ name }) => name).join(", ")}` : ""}.` };
+}
+
 /**
  * `by`: who asks. Only the dashboard's own RPC (ui.tasks.create) says "dashboard"; tasks.create, which
  * God Mode calls, is "chatgpt", whatever the caller sends (server/auto-start.ts).
@@ -428,6 +443,10 @@ export async function createTask(ctx: WriteContext, input: RpcInput<typeof tasks
   if (!labels.ok) return fail(labels.error);
   const issue = issueFor(space, input.issue);
   if (!issue.ok) return fail(issue.error);
+  // Written with the task, so a start queued by this create already uses it.
+  const asked = input.agent_profile?.trim();
+  const profile = asked ? await knownProfile(ctx, asked) : undefined;
+  if (profile && !profile.ok) return fail(`${profile.error} Nothing was created.`);
 
   const op = create(
     space,
@@ -442,6 +461,7 @@ export async function createTask(ctx: WriteContext, input: RpcInput<typeof tasks
       labels: labels.value.length ? labels.value : undefined,
       depends_on: depends?.ok ? depends.value : undefined,
       issue: issue.value,
+      agent_profile: profile?.name,
     },
     `\n${taskBody(briefText(input.brief ?? ""), input.acceptance ?? [])}`,
     space.sync.takenIds(),
@@ -531,23 +551,14 @@ export async function updateTask(ctx: WriteContext, input: RpcInput<typeof tasks
     return fail(`«${task.title}» (${task.id}): duplicate_of goes with status canceled, since merging cancels the duplicate. Nothing was changed.`, task);
   }
 
-  // A profile is named as this Mac's Paseo has it, so a typo is refused here and not at the task's start.
   const asked = input.agent_profile?.trim();
   let profile: string | null | undefined;
   if (asked !== undefined) {
     if (!asked) profile = null;
     else {
-      const paseo = ctx.dashboard.paseo;
-      if (!paseo) return fail("Paseo is not connected yet; try again in a moment. Nothing was changed.", task);
-      let known: { name: string }[];
-      try {
-        known = (await ctx.dashboard.profiles.load(paseo)).profiles;
-      } catch (error) {
-        return fail(`The agent profiles of this Mac could not be read: ${error instanceof Error ? error.message : String(error)}. Nothing was changed.`, task);
-      }
-      const found = known.find(({ name }) => name.toLowerCase() === asked.toLowerCase());
-      if (!found) return fail(`There is no agent profile «${asked}» on this Mac${known.length ? `; profiles: ${known.map(({ name }) => name).join(", ")}` : ""}. Nothing was changed.`, task);
-      profile = found.name;
+      const known = await knownProfile(ctx, asked);
+      if (!known.ok) return fail(`${known.error} Nothing was changed.`, task);
+      profile = known.name;
     }
   }
 

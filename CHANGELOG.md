@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Tasks and chats from voice
+
+- `create_task` takes `agent_profile`: a profile you name goes with the new task, so a start queued by
+  that create uses it; an unknown name creates nothing.
+- ChatGPT is told to file project work, asked by voice too, as a task with a short brief and concrete
+  acceptance lines unless you ask for a chat, and to pass a start profile only when you named one. For
+  a separate Claude chat where you named no runtime, model or effort, it is asked to choose by the
+  model pick's tiers: Sonnet 5.5 Medium for a clear local fix, Sonnet 5.5 High for harder local work,
+  Opus 5.5 High for unclear, architectural, cross-repository or risky work.
+  `meta.describe` grows from 21,380 to 21,910 bytes.
+
 ### Honest states, batches and the way to QA
 
 - Work merged while its task stayed open is found by the task's id too: a merged PR/MR whose title,

@@ -164,6 +164,26 @@ test("a task ChatGPT creates starts only while starts without asking are on; els
   }
 });
 
+test("a profile named at the create goes with the task, so the queued start uses it over the space's", async () => {
+  const profile = (id: string, name: string, thinkingOptionId: string) => ({ id, name, provider: "claude", model: "claude-default", thinkingOptionId });
+  const s = await setup({ ...PASEO, profiles: [profile("p1", "Quick", "low"), profile("p2", "Careful", "medium")] });
+  try {
+    await spaceDefaults(s, "  agent_profile: Quick\n");
+    writeGodModeSettings(s.dashboard, { start_without_asking: true });
+    const typo = await createTask(s.ctx, { space: "TST", title: "Misnamed", project: "core", agent_profile: "Carefull" });
+    assert.equal(typo.ok, false);
+    assert.match(typo.error, /There is no agent profile «Carefull» on this Mac; profiles: Quick, Careful\. Nothing was created\./);
+
+    const created = await createTask(s.ctx, { space: "TST", title: "On my profile", project: "core", brief: "Do it.", agent_profile: "careful" });
+    assert.equal(created.start, "queued", created.error);
+    assert.equal(s.task(created.id)?.agent_profile, "Careful", "stored as this Mac names it");
+    await launched(s, created.id);
+    assert.deepEqual(configs(s).map((c) => c.thinkingOptionId), ["medium"]);
+  } finally {
+    s.stop();
+  }
+});
+
 test("an open question is a non-empty entry under an Open questions heading or line, in English or Ukrainian", () => {
   assert.equal(openQuestion("Do it.\n\n## Open questions\n- Which API?\n\n## Notes\nx"), "Which API?");
   assert.equal(openQuestion("Open questions: keep the old API?"), "keep the old API?");
