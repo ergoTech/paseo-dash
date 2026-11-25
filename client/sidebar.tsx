@@ -89,7 +89,10 @@ export function DashboardSidebarItem({ currentScreen, openScreen, openPopover, t
   );
 }
 
-/** PD's search in the sidebar's popover: every space; a result opens its screen and closes the popover. */
+/**
+ * PD's search in the sidebar's popover: every space; a result opens its screen and closes the
+ * popover. The results stay while it is open, not only while the field has the focus.
+ */
 function SearchPopover({ theme, layout, close, openScreen }: PluginPopoverProps) {
   const styles = useStyles(theme, layout.compact);
   const opener = useMemo<SearchOpener>(() => {
@@ -106,7 +109,7 @@ function SearchPopover({ theme, layout, close, openScreen }: PluginPopoverProps)
   }, [close, openScreen]);
   return (
     <View style={{ padding: 12, gap: 8, minWidth: layout.compact ? undefined : 420, backgroundColor: theme.colors.surface0 }}>
-      <SearchPanel space="" opener={opener} theme={theme} styles={styles} compact={layout.compact} autoFocus />
+      <SearchPanel space="" opener={opener} theme={theme} styles={styles} compact={layout.compact} autoFocus persistent />
     </View>
   );
 }

@@ -113,7 +113,7 @@ const ID_IN_TEXT = /(?<![\p{L}\p{N}])\p{L}{2,6}[-\s]?[\p{L}\p{N}]{5}(?![\p{L}\p{
  */
 function idsOf(text: string, spaceKeys: string[]): IdForms {
   const whole = idForms(text, spaceKeys);
-  if (whole.full || whole.suffix) return whole;
+  if (whole.full || whole.suffix || whole.prefixes) return whole;
   for (const piece of text.matchAll(ID_IN_TEXT)) {
     const found = idForms(piece[0], spaceKeys);
     if (found.full) return { full: found.full };
@@ -283,8 +283,15 @@ function stateRank(status: string): number {
   return status === "done" ? 1 : status === "canceled" ? 2 : 0;
 }
 
+/** Whether `id` begins as one of the beginnings asked (text.ts idForms). */
+function startsAs(id: string, prefixes: IdForms["prefixes"]): boolean {
+  if (!prefixes) return false;
+  const [key = "", suffix = ""] = id.split("-");
+  return prefixes.some((p) => (!p.key || p.key === key) && suffix.startsWith(p.suffix));
+}
+
 /**
- * How `fields` match the words of `query`, or undefined with no word and no id. `partial` accepts
+ * How `fields` match the words of `query`, or undefined with no word, no id and no beginning of it. `partial` accepts
  * a task with some of the words; the key then counts the missing ones first. `seen` collects the
  * words this task holds at all, matched or not, so typos widen only the words no task holds.
  *
@@ -295,6 +302,8 @@ function stateRank(status: string): number {
  */
 function matchWords(id: string, status: string, fields: Field[], query: Query, partial: boolean, seen?: Set<number>): Match | undefined {
   const idHit = Boolean((query.ids.full && id === query.ids.full) || (query.ids.suffix && id.endsWith(`-${query.ids.suffix}`)));
+  // The beginning of the id: found even with no word, ranked after every task the words find.
+  const idStart = !idHit && startsAs(id, query.ids.prefixes);
   const strengths = query.words.map(() => 0);
   const groups = query.words.map(() => Number.POSITIVE_INFINITY);
   // Per field: each word's strength there and the first place it is, for the quote.
@@ -346,11 +355,12 @@ function matchWords(id: string, status: string, fields: Field[], query: Query, p
   }
   strengths.forEach((s, i) => s && seen?.add(i));
   const found = strengths.filter((s) => s > 0).length;
-  if (!idHit && (found === 0 || (!partial && found < query.words.length))) return undefined;
+  const byWords = found > 0 && (partial || found === query.words.length);
+  if (!idHit && !byWords && !idStart) return undefined;
   const title = fields.find((f) => f.name === "title");
   const exactTitle = Boolean(title && query.phrase && title.tokens.map((t) => t.norm).join(" ") === query.phrase);
   const key = [
-    idHit ? 0 : 1,
+    idHit ? 0 : byWords ? 1 : 2,
     exactTitle ? 0 : 1,
     query.words.length - found,
     // Words held only as a part of a longer word or with a typo, whatever field they are in.
@@ -361,6 +371,7 @@ function matchWords(id: string, status: string, fields: Field[], query: Query, p
     stateRank(status),
   ];
   if (idHit) return { field: "id", quote: id, exact: true, strengths, key };
+  if (!byWords) return { field: "id", quote: id, exact: false, strengths, key };
   return { field: best!.field.name, quote: quoteAround(best!.field.text, best!.at.start, best!.at.end - best!.at.start), exact: false, strengths, key };
 }
 
@@ -456,6 +467,8 @@ export function search<T extends Searchable>(items: T[], text: string, options: 
     const own = hits.filter((h) => h.match.exact);
     return { hits: sorted(own.length ? own : hits), partial: false, searchedFor: "" };
   }
+  // A task found only by the beginning of its id counts as found: «LAC-7K» lists those ids, not the
+  // other layout's reading or the tasks with some of its words.
   const full = words(items, query, options, false);
   if (full.length) return { hits: sorted(full), partial: false, searchedFor: "" };
   for (const other of otherLayouts(query.text)) {

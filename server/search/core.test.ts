@@ -120,11 +120,14 @@ test("a word ranks by the one field that places it best: a part of a title word 
   assert.deepEqual(ids(bug, "bug"), ["LAC-00056", "LAC-00055"]);
 });
 
-test("the id matches only as itself: the space key or a piece of a suffix finds nothing", () => {
+test("the id matches as itself or by its beginning typed as an id; the space key or a piece inside a suffix finds nothing", () => {
   const p = plan(task("LAC-23ABC", "Release notes", "status: todo\n"), LOGIN, FEATURE, RELEASE, task("LAC-00060", "Laconote sync", "status: todo\n"));
   assert.deepEqual(ids(p, "lac"), ["LAC-00060", "LAC-7K3QX"], "«Laconote sync» by its title, LAC-7K3QX by its project's repository, «Release notes» not by its id");
   assert.deepEqual(ids(p, "23abc"), ["LAC-23ABC"]);
-  assert.deepEqual(ids(p, "23ab"), [], "a beginning of a suffix is no id");
+  assert.deepEqual(ids(p, "3abc"), [], "a piece inside a suffix is no id");
+  // The beginning of an id, typed with a digit or in capitals.
+  for (const typed of ["23ab", "23A", "LAC-23", "lac-23a"]) assert.deepEqual(ids(p, typed), ["LAC-23ABC"], typed);
+  assert.deepEqual(ids(p, "OOO"), ["LAC-00060"], "O reads as 0");
   // Words that are in the release's title rank above an id that happens to hold their digits.
   assert.deepEqual(ids(p, "release 2.0")[0], "LAC-7K3QX");
   // A title that only looks like an id («Laconote sync» reads as no id, «Laconote» as LAC-0N0TE) is
@@ -163,4 +166,12 @@ test("features, releases and projects are found by their names", () => {
 
 test("a query with nothing to look for filters nothing", () => {
   assert.equal(search(tasksOf(plan(LOGIN)), "!!!"), undefined);
+});
+
+test("the beginning of an id ranks after every task the words find, and never names one task on its own", () => {
+  const p = plan(task("LAC-00070", "Q35 migration", "status: todo\n"), task("LAC-Q35AA", "Unrelated work", "status: todo\n"));
+  assert.deepEqual(ids(p, "Q35"), ["LAC-00070", "LAC-Q35AA"], "the title holds «Q35»; the other id only begins with it");
+  const found = search(tasksOf(p), "Q35A")!;
+  assert.deepEqual(found.hits.map((h) => [h.item.loaded.entity.id, h.match.field, h.match.exact]), [["LAC-Q35AA", "id", false]]);
+  assert.equal(onlyOne(found, "Q35A"), undefined, "a read never picks a task by a piece of its id");
 });
