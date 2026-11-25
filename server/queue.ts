@@ -3,7 +3,8 @@ import type { Task } from "../shared/model.ts";
 import { refId } from "../shared/model.ts";
 import type { autopilotReadRpc, autopilotSetRpc, autopilotStartOptionsRpc, tasksNextRpc, tasksStartReadyRpc } from "../shared/ui.ts";
 import { DEFAULT_START } from "./autopilot.ts";
-import { humanWork, humanWorkOf, sortTasks, taskSection } from "./api/view.ts";
+import { humanWork, sortTasks, taskSection } from "./api/view.ts";
+import { agentHold, agentHoldOf } from "./api/start-verdict.ts";
 import { planStart } from "./api/reads.ts";
 import { startTask, type WriteContext } from "./api/writes.ts";
 
@@ -41,10 +42,10 @@ export function nextTask(ctx: WriteContext, input: RpcInput<typeof tasksNextRpc>
     );
   const sorted = sortTasks(items);
   if (!sorted.length) return { ...empty, error: "No task is ready to start from this Mac: none is todo with nothing to wait for and its project mapped here." };
-  const at = sorted.findIndex(({ plan, task }) => !humanWork(plan, task));
-  if (at < 0) return { ...empty, error: `No task is ready for an agent from this Mac. Ready, but left to a person: ${humanWorkOf(sorted)}. To give one to an agent, start it from its own screen.` };
+  const at = sorted.findIndex(({ plan, task }) => !agentHold(ctx.dashboard, plan, task));
+  if (at < 0) return { ...empty, error: `No task is ready for an agent from this Mac. Ready, but left to a person: ${agentHoldOf(ctx.dashboard, sorted)}. To give one to an agent, start it from its own screen.` };
   const first = sorted[at]!;
-  return { task: first.task.id, title: first.task.title, space: first.space, passed_over: at ? `Passed over ${humanWorkOf(sorted.slice(0, at))}.` : "", error: "" };
+  return { task: first.task.id, title: first.task.title, space: first.space, passed_over: at ? `Passed over ${agentHoldOf(ctx.dashboard, sorted.slice(0, at))}.` : "", error: "" };
 }
 
 /**
@@ -73,7 +74,7 @@ export async function startReady(ctx: WriteContext, input: RpcInput<typeof tasks
       out.skipped.push({ id: task.id, title: task.title, reason: `it is ${taskSection(plan, task)} now` });
       continue;
     }
-    const human = humanWork(plan, task);
+    const human = agentHold(ctx.dashboard, plan, task);
     if (human) {
       out.skipped.push({ id: task.id, title: task.title, reason: `${human}; start it from its own screen to give it to an agent` });
       continue;
@@ -138,7 +139,7 @@ export function setAutopilot(ctx: WriteContext, input: RpcInput<typeof autopilot
       const task = entry.sync.plan.entities.get(input.task.trim().toUpperCase())?.entity;
       if (task?.type !== "task") return { ok: false, error: `No task ${input.task} in ${space}.` };
       if (task.status !== "todo") return { ok: false, error: `${task.id} is ${task.status}; the autopilot starts only a todo task.` };
-      const human = humanWork(entry.sync.plan, task);
+      const human = agentHold(ctx.dashboard, entry.sync.plan, task);
       if (human) return { ok: false, error: `${task.id}: ${human}; the autopilot does not start it. Start it from its own screen to give it to an agent.` };
     }
     if (input.project && !Object.hasOwn(entry.sync.plan.space?.projects ?? {}, input.project)) return { ok: false, error: `No project ${input.project} in ${space}.` };

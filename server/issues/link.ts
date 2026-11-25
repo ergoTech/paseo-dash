@@ -47,7 +47,11 @@ export type ClosingReference = { ok: true; keyword: string } | { ok: false; reas
 export function closingReference(issue: IssueRef, project: ProjectRepo | undefined): ClosingReference {
   if (!project) return { ok: false, reason: "the project's remote does not name a repository" };
   if (issue.forge !== project.forge || issue.host !== project.host) {
-    return { ok: false, reason: `the issue is on ${issue.host} and the project on ${project.host}; a merge on one forge cannot close an issue on another` };
+    // The same repository path on another host is most often a web host space.yaml does not name yet:
+    // said as a check to make, never assumed (server/tracker/web-host.ts asks the forge).
+    const sameRepo = issue.forge === project.forge && issue.repo.toLowerCase() === project.repo.toLowerCase();
+    const fix = sameRepo ? `; if ${issue.host} serves the same repository, set the project's web host to ${issue.host} in Projects (reconcile says what the forge answers)` : "";
+    return { ok: false, reason: `the issue is on ${issue.host} and the project on ${project.host}; a merge on one forge cannot close an issue on another${fix}` };
   }
   const same = issue.repo.toLowerCase() === project.repo.toLowerCase();
   return { ok: true, keyword: same ? `Closes #${issue.number}` : `Closes ${issue.repo}#${issue.number}` };

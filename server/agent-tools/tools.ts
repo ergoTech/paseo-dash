@@ -82,6 +82,13 @@ export async function handleTool(
     ops.push({ op_id: opaqueId("op"), kind: "check", id: task.id, line: line.text, done: true, run_id: run.run_id });
   }
 
+  if (report.waiting_for) {
+    // Runtime state of this Mac's run, like its activity: the plan keeps none of it.
+    run.waitingOn = { kind: report.waiting_for, ...(report.note ? { note: report.note } : {}), at: new Date().toISOString() };
+    dashboard.runs?.save();
+    notes.push(`noted that you wait for ${report.waiting_for === "user" ? "the user" : report.waiting_for}`);
+  }
+
   if (report.pr_url) {
     // A claim, not a fact: the PR/MR tracker checks it against the run's repository and branch.
     run.reportedPr = report.pr_url;

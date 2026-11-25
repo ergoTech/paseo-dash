@@ -23,7 +23,17 @@ export const BOARD_COLUMN_LIMIT = 200;
  * A PR/MR that holds a task's work, merged after the task was created by a session the dashboard did
  * not start (03-model.md, Work merged outside the dashboard): the card offers "Mark done".
  */
-export const mergedPr = z.object({ label: z.string(), url: z.string(), merged_at: z.string() });
+export const mergedPr = z.object({
+  label: z.string(),
+  url: z.string(),
+  merged_at: z.string(),
+  /** The commit the merge made on the target branch, when the forge names it. */
+  sha: z.string().optional(),
+  /** The PR/MR's source branch as the forge has it: it may differ from the task's planned one. */
+  branch: z.string().optional(),
+  /** How it was tied to the task (server/tracker/merged.ts MATCHED_BY). */
+  by: z.array(z.string()).optional(),
+});
 
 /** A board card: a task row, with the work merged outside the dashboard when there is some. */
 export const boardRow = taskRow.extend({

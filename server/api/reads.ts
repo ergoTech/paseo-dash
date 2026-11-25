@@ -31,8 +31,9 @@ import { SAFE_BRANCH } from "../sync/git.ts";
 import { type FoundEntity, type Resolved, resolveEntity, resolveProject, resolveSpaces, resolveTaskForRead, type SpaceEntry } from "./resolve.ts";
 import { type Found, type Match as TaskMatch, namedThings, parseQuery, search } from "../search/core.ts";
 import { historyWithin, localRecord, runProgress, runResult } from "./runs.ts";
-import { claiming, needOf } from "../needs.ts";
-import { decideSet, UNHELD_REASON, waitsText } from "./start-verdict.ts";
+import { claiming, needOf, waitState } from "../needs.ts";
+import { hasDelivery, readDelivery } from "../delivery.ts";
+import { decideSet, ownerGate, UNHELD_REASON, waitsText } from "./start-verdict.ts";
 import { startWithoutAsking } from "../godmode-settings.ts";
 import { findPerson, personByEmail, sameLabel } from "../../shared/labels.ts";
 import {
@@ -390,6 +391,7 @@ export function getTask(ctx: ReadContext, input: RpcInput<typeof tasksGetRpc>): 
     activity: activityText(task, host, run, claiming(ctx.dashboard, task)),
     needs: needed?.kind ?? "",
     next: needed?.next ?? "",
+    ...(live ? { state: stateText(ctx, task, host) } : {}),
     progress: progressText(task, loaded.acceptance),
     blocked_by: blockers(plan, task).join("; "),
     pr: live ? prText(ctx.dashboard.prs.seen.get(task.id), task) : (task.run_pr ?? ""),
@@ -409,7 +411,8 @@ export function getTask(ctx: ReadContext, input: RpcInput<typeof tasksGetRpc>): 
     since: live ? spokenTime(task.run_started, clock(ctx)) : "",
     acceptance: loaded.acceptance.map(({ text, done }) => ({ text, done })),
     last_message: cut(run?.lastMessage ?? "", 600),
-    brief: cut(loaded.brief, 1200),
+    brief: cut(loaded.brief, TASK_BRIEF_CHARS),
+    ...(loaded.brief.length > TASK_BRIEF_CHARS ? { brief_chars: loaded.brief.length } : {}),
     handoff: loaded.handoff ? cut(loaded.handoff.text, HANDOFF_MAX) : "",
     runs: [],
     runs_error: "",
@@ -418,6 +421,15 @@ export function getTask(ctx: ReadContext, input: RpcInput<typeof tasksGetRpc>): 
     error: "",
   };
 }
+
+/** A live run's state with its fact: "subagent_working: a sub-agent of it at work". */
+function stateText(ctx: ReadContext, task: Task, host: string): string {
+  const { state, note } = waitState(ctx.dashboard, task, host);
+  return note ? `${state}: ${note}` : state;
+}
+
+/** Characters of the brief the compact task read carries; task_text reads the rest. */
+export const TASK_BRIEF_CHARS = 1200;
 
 /** How many of a task's runs God Mode's task read carries, newest first. */
 export const RUNS_IN_TASK = 5;
@@ -432,6 +444,11 @@ export async function getTaskWithRuns(ctx: ReadContext, input: RpcInput<typeof t
   const found = resolveEntity([...ctx.dashboard.spaces.values()], "task", read.id);
   if (!found.ok) return { ...read, runs_error: found.error };
   const now = clock(ctx);
+  const { entity: task, loaded, space } = found.value;
+  if (task.type === "task" && hasDelivery(ctx.dashboard, space.sync.plan, task)) {
+    const view = await readDelivery(ctx.dashboard, space.sync.plan, space.record.mapping, task, loaded);
+    read.delivery = cut(`${view.stage}; next ${view.next_by || "nobody"}: ${view.next}`, 300);
+  }
   const history = await historyWithin(ctx.dashboard, found.value.space.sync, found.value.loaded);
   if (history.error) return { ...read, runs_error: history.error };
   const runs = history.runs.slice(0, RUNS_IN_TASK).map((run) => {
@@ -738,8 +755,11 @@ export async function planStart(
   facts.title = task.title;
   facts.project = task.project ?? "";
   const human = humanWork(plan, task);
+  // Merged work or a recorded requirement holds it like a label does (start-verdict.ts ownerGate).
+  const gate = human ? undefined : ownerGate(ctx.dashboard, plan, task);
+  const held = human || gate?.reason || "";
   // Said in every read-back of the start: a start of this task alone stays possible.
-  if (human) facts.human = cut(`${human[0]!.toUpperCase()}${human.slice(1)}: an agent starts it only because this one task was asked for`, HUMAN_WORK_CHARS);
+  if (held) facts.human = cut(`${held[0]!.toUpperCase()}${held.slice(1)}: an agent starts it only because this one task was asked for`, HUMAN_WORK_CHARS);
 
   if (hasLiveRun(task)) {
     return fail(`${name} is already started by ${task.run_by ?? "someone"} on ${task.run_host ?? "another machine"} since ${spokenTime(task.run_started, clock(ctx))}.`);
@@ -748,7 +768,7 @@ export async function planStart(
   // Unheld (in progress with no live run, 03-model.md, Statuses): a person decides what became of it,
   // so only a start someone asked for claims it again, never the autopilot.
   if (options.automatic && task.status !== "todo") return fail(`${name} is ${task.status} with no live run; only a person starts it again.`);
-  if (options.automatic && human) return fail(`${name}: ${human}.`);
+  if (options.automatic && held) return fail(`${name}: ${held}.`);
   blocking = blockingTasks(plan, task);
   waits = waitsOf(ctx.dashboard, plan, space.record.mapping, blocking);
   const left = blockingLeft(blocking, options);

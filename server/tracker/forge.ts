@@ -23,6 +23,11 @@ export interface ForgePr {
   createdAt?: string;
   /** An open draft: its work is not up for review yet. */
   draft?: boolean;
+  /** The commit the merge made on the target branch (the squash commit when squashed); merged ones only. */
+  mergeSha?: string;
+  /** Title and description, other people's text: read only to find a task's id in them. */
+  title?: string;
+  body?: string;
 }
 
 export interface CommandResult {
@@ -44,7 +49,11 @@ export const systemCommand: CommandRunner = (command, args, cwd, timeoutMs, sign
   });
 
 const TIMEOUT_MS = 15_000;
-const GH_FIELDS = "number,url,state,mergedAt,headRefName,headRefOid,createdAt,isCrossRepository,isDraft";
+/** How many of a project's latest merges one pass reads (`ForgeCli.merged`). */
+export const MERGED_LIST = 50;
+const GH_FIELDS = "number,url,state,mergedAt,headRefName,headRefOid,createdAt,isCrossRepository,isDraft,mergeCommit";
+/** A merged list also reads the texts a task's id may be named in. */
+const GH_LIST_FIELDS = `${GH_FIELDS},title,body`;
 
 /** GitHub when the project's remote is on github.com; anything else is treated as GitLab. */
 export function forgeOf(remote: string): "github" | "gitlab" {
@@ -89,6 +98,9 @@ interface GhPr {
   createdAt?: string;
   isCrossRepository?: boolean;
   isDraft?: boolean;
+  mergeCommit?: { oid?: string } | null;
+  title?: string;
+  body?: string | null;
 }
 
 interface GlabMr {
@@ -102,6 +114,10 @@ interface GlabMr {
   source_project_id?: number;
   target_project_id?: number;
   draft?: boolean;
+  merge_commit_sha?: string | null;
+  squash_commit_sha?: string | null;
+  title?: string;
+  description?: string | null;
 }
 
 /**
@@ -127,6 +143,9 @@ function fromGh(pr: GhPr): ForgePr {
     ...(pr.headRefOid ? { headSha: pr.headRefOid } : {}),
     ...(pr.createdAt ? { createdAt: pr.createdAt } : {}),
     ...(state === "open" && pr.isDraft ? { draft: true } : {}),
+    ...(state === "merged" && pr.mergeCommit?.oid ? { mergeSha: pr.mergeCommit.oid } : {}),
+    ...(pr.title ? { title: pr.title } : {}),
+    ...(pr.body ? { body: pr.body } : {}),
   };
 }
 
@@ -141,6 +160,9 @@ function fromGlab(mr: GlabMr): ForgePr {
     ...(mr.sha ? { headSha: mr.sha } : {}),
     ...(mr.created_at ? { createdAt: mr.created_at } : {}),
     ...(state === "open" && mr.draft ? { draft: true } : {}),
+    ...(state === "merged" && (mr.squash_commit_sha || mr.merge_commit_sha) ? { mergeSha: (mr.squash_commit_sha || mr.merge_commit_sha)! } : {}),
+    ...(mr.title ? { title: mr.title } : {}),
+    ...(mr.description ? { body: mr.description } : {}),
   };
 }
 
@@ -259,6 +281,41 @@ export class ForgeCli {
     const named = mr ? prPath(mr.web_url ?? "") : undefined;
     if (!mr || !named || named.path.toLowerCase() !== prPath(url)?.path.toLowerCase() || named.number !== iid) return undefined;
     return ownGlab(mr) ? fromGlab(mr) : undefined;
+  }
+
+  /**
+   * The project's PR/MRs merged most recently, newest merge first, at most `max`; with `search`, only
+   * those whose title or description has the words (the forge's search, checked again by the caller).
+   * Undefined when the CLI cannot tell. Like `byBranch`, run in the project's checkout.
+   */
+  async merged(cwd: string, remote: string, options: { search?: string; max?: number } = {}, timeoutMs = TIMEOUT_MS): Promise<ForgePr[] | undefined> {
+    const max = String(Math.min(Math.max(options.max ?? MERGED_LIST, 1), 100));
+    if (forgeOf(remote) === "github") {
+      const args = ["pr", "list", "--state", "merged", "--limit", max, "--json", GH_LIST_FIELDS];
+      // `--flag=value`, so a value starting with "-" is never read as another flag.
+      if (options.search) args.push(`--search=${options.search} in:title,body sort:updated-desc`);
+      const result = await this.run("gh", args, cwd, timeoutMs);
+      const list = result.code === 0 ? parse<GhPr[]>(result.stdout) : undefined;
+      return Array.isArray(list) ? list.filter(ownGh).map(fromGh).filter((pr) => pr.state === "merged") : undefined;
+    }
+    const args = ["mr", "list", "--merged", "--order", "merged_at", "--sort", "desc", "--per-page", max, "-F", "json"];
+    if (options.search) args.push(`--search=${options.search}`);
+    const result = await this.run("glab", args, cwd, timeoutMs);
+    const list = result.code === 0 ? parse<GlabMr[]>(result.stdout) : undefined;
+    return Array.isArray(list) ? list.filter(ownGlab).map(fromGlab).filter((mr) => mr.state === "merged") : undefined;
+  }
+
+  /**
+   * The repository's web URL and clone URLs as the forge's API names them, asked of `host` (GitLab
+   * only: GitHub's web host is its remote's). Undefined when the host does not answer for the path.
+   * It decides a project's `web_host` from the forge itself, never from host names that look alike.
+   */
+  async projectUrls(cwd: string, host: string, path: string, timeoutMs = TIMEOUT_MS): Promise<{ web: string; ssh: string; http: string } | undefined> {
+    if (!REPO_PATH.test(path) || !HOST.test(host)) return undefined;
+    const result = await this.run("glab", ["api", "--hostname", host, `projects/${encodeURIComponent(path)}`], cwd, timeoutMs);
+    const read = result.code === 0 ? parse<{ web_url?: string; ssh_url_to_repo?: string; http_url_to_repo?: string }>(result.stdout) : undefined;
+    if (!read?.web_url) return undefined;
+    return { web: read.web_url, ssh: read.ssh_url_to_repo ?? "", http: read.http_url_to_repo ?? "" };
   }
 }
 

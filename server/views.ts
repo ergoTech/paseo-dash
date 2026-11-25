@@ -4,7 +4,9 @@ import { closed, hasLiveRun, isArchived, lineLocked, refId, startable, type Task
 import type { uiOptionsRpc, uiRoadmapRpc, uiRunsRpc } from "../shared/ui.ts";
 import { renderRoadmap } from "./plan/roadmap.ts";
 import type { featureViewRpc, taskCodeMapRpc, taskRunsRpc, taskViewRpc } from "../shared/views.ts";
-import { activityText, blockers, featuresOf, humanWork, localHost, localRun, milestoneOf, milestonesOf, overlapsByTask, prText, progressText, sortTasks, spokenTime, tasksOf } from "./api/view.ts";
+import { activityText, blockers, featuresOf, localHost, localRun, milestoneOf, milestonesOf, overlapsByTask, prText, progressText, sortTasks, spokenTime, tasksOf } from "./api/view.ts";
+import { agentHold, requirementText } from "./api/start-verdict.ts";
+import { hasDelivery } from "./delivery.ts";
 import { elsewhereText, historyWithin, localRecord, runProgress, runResult } from "./api/runs.ts";
 import { hashText, taskInstructions } from "./runner/seen.ts";
 import type { Dashboard } from "./dashboard.ts";
@@ -16,7 +18,7 @@ import { glyphFor } from "./map/read.ts";
 import type { Plan } from "./plan/load.ts";
 import { findLabel, personByEmail, shownLabel } from "../shared/labels.ts";
 import { landedText } from "./tracker/landed.ts";
-import { claiming } from "./needs.ts";
+import { claiming, waitState } from "./needs.ts";
 import { issueFacts, readableIssue } from "./tracker/issues.ts";
 import { issueLabel, parseIssueUrl } from "../shared/issues.ts";
 
@@ -78,6 +80,11 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
     clarifications: "",
     instructions_hash: "",
     merged: [],
+    wait: null,
+    requires: [],
+    readiness: "",
+    hold: "",
+    delivery: false,
     archived: "",
     actions: {
       start: "",
@@ -178,6 +185,11 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
     clarifications: loaded.clarifications ?? "",
     instructions_hash: hashText(taskInstructions(loaded.brief, loaded.acceptance.map((a) => a.text), loaded.handoff?.text, loaded.clarifications)),
     merged: dashboard.owner ? dashboard.merged.peekTask({ sync: entry.sync, mapping: entry.record.mapping }, task) : [],
+    wait: live ? waitState(dashboard, task) : null,
+    requires: task.requires.map(requirementText),
+    readiness: task.readiness_checked ? `${task.readiness_checked.slice(0, 10)}: ${task.readiness_note ?? "checked"}` : "",
+    hold: startable(task) ? agentHold(dashboard, plan, task) : "",
+    delivery: hasDelivery(dashboard, plan, task),
     archived: isArchived(task) ? spokenTime(task.archived, now) : "",
     actions: {
       start: startReason(task, entry.record.mapping, now),
@@ -289,7 +301,8 @@ export function featureView(dashboard: Dashboard, input: RpcInput<typeof feature
       status: task.status,
       glyph: glyphFor(dashboard, plan, task),
       note,
-      human: humanWork(plan, task),
+      // What keeps it from Start ready tasks, as the start itself says it (start-verdict.ts agentHold).
+      human: agentHold(dashboard, plan, task),
       after: inside(task),
     });
   }

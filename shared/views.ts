@@ -110,6 +110,16 @@ export const taskViewRpc = defineRpc({
      * created, as this machine last read them (03-model.md, Work merged outside the dashboard).
      */
     merged: z.array(mergedPr),
+    /** With a live run: what it waits on (shared/overview.ts WAIT_STATES) and the fact; null without one. */
+    wait: z.object({ state: z.string(), note: z.string() }).nullable(),
+    /** What it waits for besides tasks, each "kind: reason (checked day)". */
+    requires: z.array(z.string()),
+    /** A person's last check that it can start: "2026-11-24: access checked"; "" when nobody checked. */
+    readiness: z.string(),
+    /** Why nothing starts it on its own (a person's label, merged work, a requirement); "" when nothing holds it. */
+    hold: z.string(),
+    /** Whether it has a way to accepted work to show (tasks.delivery): recorded facts, a Trello card, merged work. */
+    delivery: z.boolean(),
     /** When a person archived the finished task, as spoken ("2 days ago"); empty when it is not archived. */
     archived: z.string(),
     /** What a person may do with the task from this machine now. */

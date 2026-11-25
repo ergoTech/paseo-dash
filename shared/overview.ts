@@ -26,6 +26,30 @@ export const overviewInput = z.object({
 export const NEEDS_KINDS = ["permission", "question", "failed", "sync", "answer", "stopped", "checkout", "closed", "merged", "accept"] as const;
 export type NeedsKind = (typeof NEEDS_KINDS)[number];
 
+/**
+ * What a live run waits on (server/needs.ts waitState; 06-god-mode.md, Waiting states). Only
+ * needs_user_question, approval, answer, blocked, failed, stopped, record_lost (this Mac lost the
+ * record of its agent: not an ended run) and checkout wait for the user, and needs_you says what to
+ * do; subagent_working, waiting_for_ci and waiting_for_review do not, nor do the rest.
+ */
+export const WAIT_STATES = [
+  "launching",
+  "working",
+  "subagent_working",
+  "waiting_for_ci",
+  "waiting_for_review",
+  "needs_user_question",
+  "approval",
+  "answer",
+  "blocked",
+  "failed",
+  "stopped",
+  "record_lost",
+  "checkout",
+  "elsewhere",
+] as const;
+export type WaitState = (typeof WAIT_STATES)[number];
+
 /** A live run's agent as the reads say it (overview.running, autopilot.read's runs). */
 export const RUN_ACTIVITIES = ["launching", "working", "waiting", "failed", "stopped"] as const;
 
@@ -53,6 +77,8 @@ export const overviewOutput = z.object({
        * it (gone, or none known here). Another machine's run reads `working`: only it knows.
        */
       activity: z.enum(RUN_ACTIVITIES),
+      /** What it waits on: an idle agent with a sub-agent at work or checks running does not wait for the user. */
+      state: z.enum(WAIT_STATES),
       host: z.string(),
       chat_id: z.string(),
       /** When the run started, ISO time. */

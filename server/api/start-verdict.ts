@@ -3,7 +3,8 @@ import type { StartDecision } from "../../shared/api.ts";
 import type { Dashboard } from "../dashboard.ts";
 import type { Plan } from "../plan/load.ts";
 import { needOf, runActivity } from "../needs.ts";
-import { blockingTasks, humanWork } from "./view.ts";
+import { blockingTasks, cut, HUMAN_WORK_CHARS, humanWork, humanWorkOf } from "./view.ts";
+import { mergedText, reconcileNext } from "./reconcile.ts";
 
 /**
  * What starting a task from ChatGPT does now, for one task or a set the user named (06-god-mode.md,
@@ -92,6 +93,48 @@ function stateVerdict(dashboard: Dashboard, task: Task, host: string): Verdict |
   }
 }
 
+/** How a requirement reads in a reason: "owner: pick the grace period (checked 2026-11-20)". */
+export function requirementText(r: { kind: string; reason: string; checked?: string }): string {
+  return `${r.kind}: ${r.reason}${r.checked ? ` (checked ${r.checked.slice(0, 10)})` : ""}`;
+}
+
+/**
+ * What a person settles before an agent takes the task on its own, apart from a label of a person's
+ * work and the tasks it waits for: work of it merged on the forge already (a second implementation
+ * would duplicate it), or a requirement the plan records (an owner's decision, an environment, a
+ * device, an access, QA). A start of this one task alone still goes, saying it.
+ */
+export function ownerGate(dashboard: Dashboard, plan: Plan, task: Task): { reason: string; next: string; needs: "merged" | "requirement" } | undefined {
+  const merged = dashboard.merged.shown(plan, task);
+  if (merged.length) {
+    const loaded = plan.entities.get(task.id);
+    return { reason: cut(`its work is merged already: ${mergedText(merged)}`, 200), next: reconcileNext(merged, loaded?.acceptance ?? []), needs: "merged" };
+  }
+  if (task.requires.length) {
+    const all = task.requires.map(requirementText).join("; ");
+    return {
+      reason: cut(`it waits for ${all}`, 200),
+      next: "the user settles it and takes it off the task (update_task requires), or starts this one task by itself knowing it",
+      needs: "requirement",
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Why nothing starts the task on its own (the autopilot, Start next, Start ready tasks, a new task's
+ * start): a label of a person's work, else the owner's gate; "" when nothing holds it back.
+ */
+export function agentHold(dashboard: Dashboard, plan: Plan, task: Task): string {
+  return humanWork(plan, task) || (ownerGate(dashboard, plan, task)?.reason ?? "");
+}
+
+/** Several held tasks in one line: by their labels when labels hold them all, else each with its reason. */
+export function agentHoldOf(dashboard: Dashboard, items: { plan: Plan; task: Task }[]): string {
+  if (items.every(({ plan, task }) => humanWork(plan, task))) return humanWorkOf(items);
+  return cut(items.map(({ plan, task }) => `${task.id}: ${agentHold(dashboard, plan, task)}`).join("; "), HUMAN_WORK_CHARS);
+}
+
 /** A task outside the set that will be done without this set: a run holds it, or its work is in review. */
 function underWay(task: Task): boolean {
   return hasLiveRun(task) || task.status === "in_progress" || task.status === "review";
@@ -123,6 +166,12 @@ export function decideSet(dashboard: Dashboard, host: string, items: SetItem[]):
       const blockers = blockingTasks(plan, task);
       const also = item.refusal || (blockers.length ? `it waits for ${blockers.map((b) => b.text).join("; ")}` : "");
       const owners = verdict("needs_owner", also ? `${human}; also ${also}` : human, also ? HUMAN_HELD_NEXT : HUMAN_NEXT, { needs: "human_label" });
+      out.set(task.id, owners);
+      return owners;
+    }
+    const gate = ownerGate(dashboard, plan, task);
+    if (gate) {
+      const owners = verdict("needs_owner", gate.reason, gate.next, { needs: gate.needs });
       out.set(task.id, owners);
       return owners;
     }

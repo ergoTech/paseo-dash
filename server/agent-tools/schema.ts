@@ -18,6 +18,10 @@ export const reportSchema = z
       .describe("Acceptance lines finished, by text or number (1 is the first)"),
     state: z.enum(["working", "blocked", "done"]).optional(),
     blocker: z.string().trim().max(300).optional().describe("What blocks you, when state is blocked"),
+    waiting_for: z
+      .enum(["ci", "review", "subagent", "user"])
+      .optional()
+      .describe("When you end your turn to wait: for CI, a review, your sub-agents, or the user's answer"),
     pr_url: z
       .string()
       .trim()

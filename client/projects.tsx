@@ -128,6 +128,14 @@ function LineEditor({ space, line, list, styles, theme }: { space: string; line:
         </View>
         <Button label="Save web host" ghost disabled={webHost.trim() === line.web_host} onPress={() => updating.mutate({ web_host: webHost.trim() })} styles={styles} />
       </View>
+      {line.web_host_problem ? (
+        <View style={[styles.row, { flexWrap: "wrap", alignItems: "center" }]}>
+          <Text style={[styles.error, { flexGrow: 1, flexShrink: 1, minWidth: 180 }]}>{line.web_host_problem}</Text>
+          {line.web_host_served && line.web_host_served !== line.web_host ? (
+            <Button label={`Use ${line.web_host_served}`} ghost onPress={() => updating.mutate({ web_host: line.web_host_served })} styles={styles} />
+          ) : null}
+        </View>
+      ) : null}
       <Problem action={updating} styles={styles} />
 
       <View style={{ gap: 6 }}>
@@ -226,6 +234,11 @@ function LineRow({ space, line, index, count, list, open, onToggle, styles, them
           <Text numberOfLines={1} style={[styles.muted, { color: line.local ? theme.colors.foregroundMuted : theme.colors.statusWarning }]}>
             {`${where}${line.open_tasks ? ` · ${line.open_tasks} open` : ""}`}
           </Text>
+          {line.web_host_problem ? (
+            <Text numberOfLines={1} style={[styles.muted, { color: theme.colors.statusWarning }]}>
+              {line.web_host_served ? `Web host: the forge serves it at ${line.web_host_served}; open to fix` : "Web host: its links name another host; open to check"}
+            </Text>
+          ) : null}
           {line.shared_with.length ? (
             <Text style={[styles.muted, { color: theme.colors.statusWarning }]}>
               {`Also a line in ${line.shared_with.join(", ")}: the same repository, with its own tasks in each plan and nothing synced between them. Where this Mac maps them to the same Paseo project, its workspaces count under each line.`}

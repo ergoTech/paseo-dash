@@ -1,7 +1,10 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { existsSync, statSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
-import { LINE_COLOR_PATTERN, PROJECT_KEY_PATTERN, WEB_HOST_PATTERN } from "../../shared/model.ts";
+import { LINE_COLOR_PATTERN, PROJECT_KEY_PATTERN, type SpaceProject, WEB_HOST_PATTERN } from "../../shared/model.ts";
+import type { Dashboard } from "../dashboard.ts";
+import type { Plan } from "../plan/load.ts";
+import { webHostProblem } from "../tracker/web-host.ts";
 import {
   lineColors,
   nextLineColor,
@@ -138,6 +141,7 @@ export async function listProjects(ctx: WriteContext, paseo: PaseoApi, input: Rp
         color_set: Boolean(p.color),
         group: p.group ?? "",
         web_host: p.web_host ?? "",
+        ...webHostFacts(ctx.dashboard, space.sync.plan, key, p),
         local: found ? { project_id: found.projectId, name: found.name, root: found.rootPath ?? "" } : null,
         override: Boolean(space.record.overrides[key]) && space.record.overrides[key] === mapped,
         open_tasks: openTasksOf(space.sync.plan, key).length,
@@ -329,4 +333,10 @@ export async function cloneProject(ctx: WriteContext, paseo: PaseoApi, target: {
   await git(ctx.dashboard.git, dirname(target.directory), ["clone", "--quiet", "--", target.remote, target.directory], CLONE_MS);
   await paseo.workspaces.open({ cwd: target.directory });
   ctx.dashboard.updateMapping(await localProjects(paseo, ctx.dashboard.git));
+}
+
+/** The web host the forge serves the project at and what is wrong with the one space.yaml names, as this Mac last read it. */
+function webHostFacts(dashboard: Dashboard, plan: Plan, key: string, project: SpaceProject): { web_host_served: string; web_host_problem: string } {
+  const verdict = dashboard.webHosts.peek(plan, key, project);
+  return { web_host_served: verdict?.served ?? "", web_host_problem: verdict ? webHostProblem(key, verdict) : "" };
 }
