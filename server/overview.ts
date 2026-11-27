@@ -8,6 +8,7 @@ import type { SpaceSync } from "./sync/space-sync.ts";
 import { planProblems } from "./plan/load.ts";
 import { unreadCount } from "./events.ts";
 import { flat, needOf, runActivity, SYNC_NEXT, waitState } from "./needs.ts";
+import { reconcileNeeds } from "./reconcile/needs.ts";
 
 type Overview = RpcOutput<typeof overviewRpc>;
 
@@ -72,7 +73,8 @@ export function readOverview(dashboard: Dashboard, { space, limit }: RpcInput<ty
     result.needs_you.push(full);
     since.set(full, at);
   };
-  for (const { record, sync } of chosen) {
+  for (const entry of chosen) {
+    const { record, sync } = entry;
     const plan = sync.plan;
     const tasks = tasksOf(plan);
     const key = record.key;
@@ -86,10 +88,14 @@ export function readOverview(dashboard: Dashboard, { space, limit }: RpcInput<ty
     for (const task of tasks.filter(hasLiveRun)) {
       const run = localRun(dashboard.runs, task);
       const needed = needOf(dashboard, task, host);
-      if (needed) need({ task: task.id, title: task.title, why: needed.why, next: needed.next, chat_id: needed.chatId ?? run?.agentId ?? "", kind: needed.kind, space: key }, needed.since);
+      if (needed) {
+        const held = dashboard.reconciler.heldRun(entry, task, needed);
+        need({ task: task.id, title: task.title, why: needed.why, next: held?.next ?? needed.next, chat_id: needed.chatId ?? run?.agentId ?? "", kind: needed.kind, space: key, ...(held ? { cards: held.cards } : {}) }, needed.since);
+      }
       if (task.status !== "in_progress") continue;
       result.running.push({ task: task.id, title: task.title, activity: runActivity(dashboard, task, host), state: waitState(dashboard, task, host).state, host: task.run_host ?? "", chat_id: run?.agentId ?? "", since: task.run_started ?? "" });
     }
+    for (const item of reconcileNeeds(dashboard, entry)) need({ ...item, chat_id: "", space: key });
     const review = tasks.filter((t) => t.status === "review");
     result.counts.review += review.length;
     result.review.push(...review.map((t) => ({ task: t.id, title: t.title, pr: prText(dashboard.prs.seen.get(t.id), t), since: reviewSince(t) })));
@@ -129,7 +135,11 @@ export function readOverview(dashboard: Dashboard, { space, limit }: RpcInput<ty
   result.running.sort((a, b) => attention.indexOf(a.activity) - attention.indexOf(b.activity) || oldest(a.since, b.since) || a.task.localeCompare(b.task));
   result.review.sort((a, b) => oldest(a.since, b.since) || a.task.localeCompare(b.task));
   const cap = limit ?? LIST_LIMIT;
-  result.needs_you = result.needs_you.slice(0, cap);
+  const shown = result.needs_you.slice(0, cap);
+  // The one list of PR/MRs to merge stays in a short excerpt too.
+  const merge = result.needs_you.slice(cap).find((item) => item.kind === "merge");
+  if (merge && shown.length && !shown.some((item) => item.kind === "merge")) shown[shown.length - 1] = merge;
+  result.needs_you = shown;
   result.running = result.running.slice(0, cap);
   result.review = result.review.slice(0, cap);
   result.milestones.sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999"));

@@ -549,6 +549,22 @@ export const deliveryInput = z.object({
   trello_state: z.string().trim().max(80).optional(),
   qa: z.enum(["pending", "passed", "failed", ""]).optional(),
   qa_note: z.string().trim().max(500).optional(),
+  variants: z.array(z.string().trim().min(1).max(32)).max(6).optional().describe("Builds QA needs: phone, wear"),
+  environment: z.string().trim().max(32).optional().describe("Default staging"),
+  builds: z
+    .array(
+      z.object({
+        variant: z.string().trim().max(32).optional(),
+        environment: z.string().trim().max(32).optional(),
+        sha: z.string().trim().regex(/^[0-9a-fA-F]{7,64}$/),
+        url: z.string().trim().regex(/^https:\/\/\S+$/).max(500).optional(),
+        version: z.string().trim().max(80).optional(),
+      }),
+    )
+    .max(10)
+    .optional()
+    .describe("Replaces the list; a build covers every card whose merge it holds"),
+  play: z.enum(["unpublished", "submitted", "published", ""]).optional(),
 });
 
 export const tasksUpdateInput = z.object({
@@ -806,6 +822,15 @@ export const reconcileRpc = defineRpc({
         left: z.array(z.string()),
         left_count: z.number().int(),
         next: z.string(),
+        /**
+         * In a project this Mac reconciles (Settings → Automatic closing): "closes" when everything is
+         * verified and the rule will close it, else "held"; "" elsewhere. `diagnosis` is the first thing
+         * in the way, `next` its one step, `sources` the PR/MRs it rests on, `rule` this Mac's mode.
+         */
+        verdict: z.enum(["closes", "held", ""]).optional(),
+        diagnosis: z.string().optional(),
+        sources: z.array(z.object({ label: z.string(), url: z.string() })).optional(),
+        rule: z.string().optional(),
       }),
     ),
     projects: z.array(z.object({ space: z.string(), project: z.string(), problem: z.string() })),
@@ -1141,6 +1166,8 @@ export const tasksDeliveryRpc = defineRpc({
     steps: z.array(z.object({ step: z.string(), state: z.string(), fact: z.string() })),
     trello_blocker: z.string(),
     qa_handoff: z.string(),
+    /** An app card's recorded builds, variants and Google Play state, for the editor; empty for another card. */
+    app: z.object({ variants: z.array(z.string()), environment: z.string(), builds: z.array(z.object({ variant: z.string(), environment: z.string(), sha: z.string(), url: z.string(), version: z.string() })), play: z.string() }).optional(),
     error: z.string(),
   }),
 });

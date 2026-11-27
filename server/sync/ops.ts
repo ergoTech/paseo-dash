@@ -32,6 +32,7 @@ import {
   writeHandoff,
 } from "../plan/document.ts";
 import { entityFileName } from "../plan/ids.ts";
+import { planHolds } from "../reconcile/plan-gate.ts";
 import { createRefusal, type DelegatedEdit, editRefusal, outsideRefusal, revisionOf, sameEdit, type Via } from "../delegation/rules.ts";
 import {
   editSpace,
@@ -61,6 +62,13 @@ export type Operation =
    * as SpaceSyncOptions.authorize says.
    */
   | { op_id: string; kind: "delegated"; id: string; via: Via; expect_rev: string; edit: DelegatedEdit }
+  /**
+   * A closure by the owner's rule (server/reconcile): the card goes to done only on the revision it was
+   * checked at, with the plan's own holds read again at every apply, and only while the evidence is
+   * fresh. With `run_id` it is the card's own live run that ends by its merged PR/MR; without, a card
+   * no run holds. Any doubt drops it (logged, never a conflict): the next pass looks again.
+   */
+  | { op_id: string; kind: "close"; id: string; expect_rev: string; run_id?: string; closure: Closure }
   | { op_id: string; kind: "set"; id: string; field: string; value: unknown; expect: unknown }
   | { op_id: string; kind: "status"; id: string; to: TaskStatus; expect: TaskStatus }
   | { op_id: string; kind: "brief"; id: string; text: string; expect_hash: string }
@@ -135,6 +143,26 @@ export function delegationOf(op: Operation): DelegatedOperation | undefined {
   return op.kind === "create" && op.via ? (op as DelegatedOperation) : undefined;
 }
 
+/** What a closure by rule writes on the card: when, where, on which merged PR/MR/s, and the facts in words. */
+export interface Closure {
+  /** When the facts were read. */
+  at: string;
+  by: string;
+  prs: string[];
+  note: string;
+}
+
+/**
+ * The card a closure was checked on, as delegated changes compare it: every part of it but the times,
+ * which a replay of earlier journaled changes writes anew. A status someone changed and put back
+ * before the write leaves the same card, so it is not seen here; the history the facts were read
+ * from, read just before, is what narrows that (server/reconcile/history.ts).
+ */
+export const closeRevision = (loaded: LoadedEntity): string => revisionOf(loaded);
+
+/** How long the facts a closure was checked on may wait before it is written: older ones are read again. */
+export const CLOSE_FRESH_MS = 15 * 60_000;
+
 export interface RunFields {
   run_id: string;
   run_by: string;
@@ -158,7 +186,7 @@ export type Outcome =
   | { status: "dropped"; reason: string };
 
 /** Fields that only dedicated operations may write. */
-const PROTECTED_FIELDS = new Set(["id", "type", "status", "created", "labels", "archived"]);
+const PROTECTED_FIELDS = new Set(["id", "type", "status", "created", "labels", "archived", "auto_closed"]);
 const PROTECTED_PREFIXES = ["run_", "progress_"];
 
 /**
@@ -335,6 +363,30 @@ function apply(ws: Workspace, plan: Plan, op: Operation, now: string): Outcome {
           setField(document, "rank", undefined);
         }
         if (depends_on !== undefined) setField(document, "depends_on", depends_on);
+      });
+    }
+
+    case "close": {
+      const loaded = ws.task(op.id);
+      if (!loaded) return { status: "dropped", reason: "no such task" };
+      const task = loaded.entity;
+      // The same closure recorded again, by a replay or another machine: written once.
+      if (task.status === "done" && task.auto_closed && JSON.stringify(task.auto_closed.prs) === JSON.stringify(op.closure.prs)) return { status: "already" };
+      if (closed(task)) return { status: "dropped", reason: `${op.id} is ${task.status} already` };
+      if (!(Date.parse(now) - Date.parse(op.closure.at) <= CLOSE_FRESH_MS)) return { status: "dropped", reason: "the facts it stands on were read too long ago" };
+      if (closeRevision(loaded) !== op.expect_rev) return { status: "dropped", reason: `${op.id} changed after it was checked` };
+      if (op.run_id && (task.run_id !== op.run_id || !hasLiveRun(task))) return { status: "dropped", reason: "run not live" };
+      const holds = planHolds(plan, task, loaded, { asRun: Boolean(op.run_id) });
+      if (holds.length) return { status: "dropped", reason: holds[0]!.text };
+      const { at, by, prs, note } = op.closure;
+      return edit(ws, loaded, now, (document) => {
+        setField(document, "status", "done");
+        setField(document, "auto_closed", { at, by, prs, note });
+        if (op.run_id) {
+          setField(document, "run_ended", at);
+          if (prs[0]) setField(document, "run_pr", prs[0]);
+        }
+        if (task.archived) setField(document, "archived", undefined);
       });
     }
 

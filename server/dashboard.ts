@@ -45,6 +45,8 @@ import { ReleasePusher, type ReleasePusherOptions, ReleaseStore } from "./lacono
 import { UiPrefsStore } from "./ui-prefs.ts";
 import { checkGodModeFile } from "./godmode-settings.ts";
 import { checkPlanToolsFile, planToolsOn } from "./plan-tools-settings.ts";
+import { Reconciler, type ReconcilerOptions } from "./reconcile/reconciler.ts";
+import { checkRulesFile } from "./reconcile/rules.ts";
 import { DelegationStore } from "./delegation/store.ts";
 import { ManagedQueue } from "./managed/queue.ts";
 import { handleCoordinatorTool } from "./delegation/tools.ts";
@@ -93,6 +95,7 @@ export interface DashboardOptions {
   issues?: Partial<IssueTrackerOptions>;
   merged?: Partial<MergedTrackerOptions>;
   mirror?: Partial<IssueMirrorOptions>;
+  reconcile?: Partial<ReconcilerOptions>;
   releases?: Partial<ReleasePusherOptions>;
   /** The forge CLIs (gh, glab); injectable for tests. */
   forge?: ForgeCli;
@@ -169,6 +172,8 @@ export class Dashboard {
   readonly issues: IssueTracker;
   /** Work merged outside the dashboard for tasks that never ran (server/tracker/merged.ts). */
   readonly merged: MergedTracker;
+  /** Closes finished cards under the owner's rule and keeps what holds the others (server/reconcile). */
+  readonly reconciler: Reconciler;
   /** GitLab projects' web hosts as their forges name them (server/tracker/web-host.ts). */
   readonly webHosts: WebHosts;
   /** What idle run agents wait on: their child agents and their PR/MR's checks (server/wait.ts). */
@@ -253,6 +258,8 @@ export class Dashboard {
       projectRoot: (projectId) => this.projectRoots.get(projectId),
       forge: this.forge,
       archived: (run) => this.workspaceArchived(run),
+      gate: (sync, task, runId, url) => this.reconciler.gate(sync, task, runId, url),
+      ruled: (sync, task) => this.reconciler.ruled(sync, task),
       ready: () => this.local !== undefined,
       log: (message) => console.error(`dashboard: ${message}`),
       ...options.prs,
@@ -274,6 +281,20 @@ export class Dashboard {
       issueClosers: (plan, task) => this.issues.peek(task, plan)?.closedBy ?? [],
       log: (message) => console.error(`dashboard: ${message}`),
       ...options.merged,
+    });
+    this.reconciler = new Reconciler({
+      dataDir: this.dataDir,
+      spaces: () => (this.owner ? [...this.spaces.values()] : []),
+      projectRoot: (projectId) => this.projectRoots.get(projectId),
+      forge: this.forge,
+      git: this.runner,
+      runs: () => (this.owner ? this.runs : undefined),
+      seen: (taskId) => this.prs.seen.get(taskId),
+      closers: (plan, task) => this.issues.peek(task, plan)?.closedBy ?? [],
+      merged: (plan, task) => this.merged.shown(plan, task),
+      ready: () => this.local !== undefined,
+      log: (message) => console.error(`dashboard: ${message}`),
+      ...options.reconcile,
     });
     this.waits = new WaitProbe({
       paseo: () => this.paseo,
@@ -496,6 +517,8 @@ export class Dashboard {
     if (godMode) this.warnings.push(`the ChatGPT settings could not be read and were moved to ${godMode}; starting without asking is off`);
     const planTools = checkPlanToolsFile(this.dataDir);
     if (planTools) this.warnings.push(`the plan tools' switch could not be read and was moved to ${planTools}; the plan tools are off`);
+    const rules = checkRulesFile(this.dataDir);
+    if (rules) this.warnings.push(`the automatic closing rules could not be read and were moved to ${rules}; no project closes cards`);
     this.mirrorStore = new MirrorStore(this.dataDir);
     if (this.mirrorStore.movedAside) this.warnings.push(`the issue mirror's record could not be read and was moved to ${this.mirrorStore.movedAside}`);
     this.events = new EventStore(join(this.dataDir, "events.json"));
@@ -556,6 +579,7 @@ export class Dashboard {
       runner: this.runner,
       timeouts: this.options.timeouts,
       onClaimDecided: (_task, runId, won) => this.starts?.claimDecided(runId, won),
+      mayClose: (op) => this.reconciler.mayClose(record.key, op.id),
       authorize: (op) => (this.delegation ? this.delegation.objection(record.key, op) : "delegation is not available"),
       onDelegated: (op, outcome) => {
         // A record that cannot be saved never stops the plan's sync.
@@ -585,6 +609,8 @@ export class Dashboard {
       }
       // With the plans fresh: what the autopilot may start now (server/autopilot.ts).
       await this.autopilot?.pass().catch((error: unknown) => console.error(`dashboard: autopilot pass failed: ${String(error)}`));
+      // Not waited for: it asks the forges, and the next sync must not wait on them.
+      void this.reconciler.pass().catch((error: unknown) => console.error(`dashboard: reconcile pass failed: ${String(error)}`));
     } finally {
       this.syncing = false;
     }
@@ -900,6 +926,7 @@ export class Dashboard {
     this.merged.stop();
     this.webHosts.stop();
     this.mirror.stop();
+    this.reconciler.stop();
     this.releases.stop();
     this.bridge?.stop();
     if (this.timer) clearInterval(this.timer);

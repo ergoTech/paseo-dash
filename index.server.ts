@@ -39,6 +39,8 @@ import { readGodModeSettings, startWithoutAsking, writeGodModeSettings } from ".
 import { godModeSettingsRpc, godModeSettingsSetRpc } from "./shared/godmode.ts";
 import { readPlanToolsSettings, writePlanToolsSettings } from "./server/plan-tools-settings.ts";
 import { planToolsSettingsRpc, planToolsSettingsSetRpc } from "./shared/plan-tools.ts";
+import { reconcileRulesRpc, reconcileRulesSetRpc } from "./shared/reconcile.ts";
+import { readRules, writeRules } from "./server/reconcile/rpc.ts";
 import { enableDelegation, grantDelegation, listDelegationAgents, readDelegation, readDelegationLog, revokeDelegation } from "./server/delegation/rpc.ts";
 import { delegationAgentsRpc, delegationEnableRpc, delegationGrantRpc, delegationLogRpc, delegationReadRpc, delegationRevokeRpc } from "./shared/delegation.ts";
 import { previewQueue, readQueue, setQueue } from "./server/managed/rpc.ts";
@@ -287,6 +289,9 @@ export default function contribute(server: PluginServerContext) {
   // The plan tools' switch (shared/plan-tools.ts), also only on the dashboard's screens.
   server.handle(planToolsSettingsRpc, started(() => readPlanToolsSettings(dashboard)));
   server.handle(planToolsSettingsSetRpc, started((input) => writePlanToolsSettings(dashboard, input)));
+  // The owner's rule for automatic closing (shared/reconcile.ts), only on the dashboard's screens: ChatGPT cannot switch it on.
+  server.handle(reconcileRulesRpc, started(() => readRules(dashboard)));
+  server.handle(reconcileRulesSetRpc, started((input) => writeRules(dashboard, input)));
   // Delegated planning (shared/delegation.ts), only on the dashboard's screens: ChatGPT cannot grant it.
   server.handle(delegationReadRpc, started(() => readDelegation(dashboard)));
   server.handle(delegationEnableRpc, started((input) => enableDelegation(dashboard, input)));

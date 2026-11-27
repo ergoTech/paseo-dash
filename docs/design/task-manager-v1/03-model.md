@@ -263,6 +263,14 @@ delivery:               # optional: the way from merged code to accepted work (s
   trello: https://trello.com/c/AbCd1234
   trello_state: In QA
   qa: pending           # pending | passed | failed
+  variants: [phone, wear]       # an app: the builds QA needs; environment defaults to staging
+  builds: [{variant: phone, environment: staging, sha: 5e1f0c4, url: "https://apk.example.com/staging.apk", version: 1.4.0}]
+  play: unpublished     # unpublished | submitted | published: recorded, never inferred
+auto_closed:            # written once by the owner's closing rule (see "Automatic reconciliation"), never by hand
+  at: 2026-11-27T12:31:31Z
+  by: ergo-mbp
+  prs: [https://github.com/acme/core/pull/41]
+  note: "#41 (41bbbbb) merged into main; …"
 created: 2026-10-25T20:58:11Z
 updated: 2026-10-25T21:52:40Z
 ---
@@ -621,8 +629,80 @@ group (`stage_checked`, `trello_checked`, `qa_at`). The task's way to accepted w
 the task screen's Delivery) adds what the forge and git say: the PR/MR and its merge commit, its checks,
 and whether the stage build holds the merge (`git merge-base --is-ancestor` in the project's checkout;
 unknown for a commit it lacks). Passing checks never tick a manual check; QA's result or the owner's
-acceptance closes the work. Paseo Dash has no Trello access: it links the card and says the state last
+acceptance closes the work (or, in a reconciled project, the rule below). Paseo Dash has no Trello access: it links the card and says the state last
 recorded, and gives a QA handoff text to post on it.
+
+#### App delivery
+
+An app card (one whose `delivery` names `variants`, a `builds` list or `play`) keeps four states that
+never stand for one another: the **code** (open PRs with their blockers, or merged), a **build** QA can
+install for each variant the card needs (`variants`, default `phone`; a watch is `wear`) in its
+`environment` (default `staging`), **QA's result**, and the **publication** (`play`: `unpublished`,
+`submitted`, `published`, recorded by a person). A merge changes neither QA nor the publication; a
+build being available marks no test passed.
+
+Builds are shared. `builds` recorded on any card of a project are one pool (each artifact once), and a
+build covers a card when git in the project's checkout shows both that the build's commit is on
+`origin/<trunk>` as the checkout last fetched it and that every merge commit of the PR/MRs the card
+names (its own, and any it links, its run reported, its branch holds or closed its issue) is an
+ancestor of it, and variant and environment match and a link to install it is recorded. A card with
+such a PR/MR still open or not read, a merge the forge names no commit for, a commit the checkout
+lacks, or a build of another variant or environment is covered by nothing; the delivery read says
+which, and "not known" is never said as "missing". Wear and phone builds are separate steps.
+
+#### Automatic reconciliation
+
+Per project, per machine, the owner chooses `off` (the default), `report` or `close` (Settings →
+Automatic closing; `reconcile.json` in the plugin's data, never the plan, never reachable from God
+Mode). A project that is not `off` is reconciled: every open card with work behind it (a PR/MR known,
+work under way or in review) is compared with the forge and the plan, after each sync of the plans and
+on what is old or changed. A card closes only when everything holds, and then once:
+
+- its own merged PR/MR: tied to the card by its run, a link on the card, its own branch (no other card
+  plans it), its id in the PR/MR's branch, or the forge's record that it closed the card's issue, and
+  nothing gives it to another card (another card's run, a link of another card, another card's id in
+  its title or branch). A mention in a description is never enough; merged before the card existed is
+  not its work;
+- every PR/MR the card names (its own and the shared ones it links, its run reported, its branch holds
+  or closed its issue) merged into the target branch (`base`, else the project's `trunk`) with nothing
+  pushed to its branch after the merge; none still open (an open PR/MR whose title or branch names the
+  card counts too) and none linked and dropped without a merge;
+- every check the forge reports passing, with at least one that succeeded (a PR/MR with none, or with
+  only skipped ones, counts only where the owner allows it for the project); a requested change in a
+  review holds it. Paseo Dash reads the checks the forge lists: a required check that never reported
+  is not seen, so branch protection is what guards it;
+- the card's scope, read from the plan's history, as it stood when the PR/MR merged, and nobody has
+  marked it done, canceled, in review or a draft since;
+- every acceptance line ticked (and at least one); no requirement, open question or person's label
+  (`defaults.human_labels` or one that reads like it); QA passed where delivery or a Trello card say
+  QA tests it; every dependency done; no live run and no earlier closing of the rule on it (a card the
+  owner reopened is theirs).
+
+Anything not read is a hold, never a pass: a forge that did not answer (asked again a minute later), and
+what waiting does not change, each with its own step: a link into another repository, a linked fork's
+PR/MR, a project not mapped here, more PR/MRs than are read (5 links, 10 named), a history that cannot
+be read. The open PR/MRs compared for a follow-up are the forge's search of the id in titles and
+descriptions plus the project's latest 100; a branch-only mention beyond those is not seen. At most
+two cards are asked about at once. Each hold carries what is wrong, the one next step, who acts (owner,
+agent, nobody yet) and where the decision comes from (a PR/MR, the card, space.yaml). `report` stops
+after the verdict: it says what is left and closes nothing.
+
+The closing is the `close` operation: `done` and `auto_closed` (when the facts were read, which
+machine, the PR/MRs and the facts in words), written only if the card is still the revision it was
+checked on (every part but the times), the evidence is at most 15 minutes old, the plan's own holds
+still stand off and this machine's rule still allows it. Otherwise it is dropped without a conflict and the
+next pass reads again. A replay after a restart, or by another machine, finds the closure written and
+changes nothing. A status someone changed and put back between the check and the write leaves the same
+revision; the plan's history, read just before, narrows that window but this does not close it.
+
+A live run's card is never closed from outside its run. The run's own merged PR/MR ends it as before,
+except in a reconciled project: under `close` it ends only with everything above verified (an archived
+workspace no longer stands for unticked lines), and under `report` it does not end by itself at all.
+The closing names the run and the merged PR/MR it was asked for, so a run that took the task
+meanwhile is never ended by an earlier run's merge. Otherwise the run stays, its agent is left alone,
+the merged PR/MR's note says what holds it, and the next step is a release (a held task is not set
+done). A card the rule closed once and its owner reopened is not closed again, by a new run either.
+Nothing here starts, stops, releases or restarts a run.
 
 ### Projects' web hosts (runtime, per machine)
 

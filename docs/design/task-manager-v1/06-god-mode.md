@@ -1037,6 +1037,10 @@ time, two after errors, and a brief past 1,200 characters could not be read whol
   merge commit, source branch, how it was tied, the acceptance still open and the next step; with
   `task`, it asks that task's forge now. `projects` names a GitLab project whose web host is not the
   one its forge serves, with the fix. It changes nothing; merged with open acceptance is not done.
+  In a project this Mac reconciles it also lists the cards the rule holds, each row with `verdict`
+  (`closes` or `held`), `diagnosis` (the first thing in the way), `next` (its one step), `sources` (the
+  PR/MRs it rests on) and `rule`; named, a card is asked now. It still changes nothing: the closing is
+  the rule's, on this Mac (03-model.md, Automatic reconciliation).
 - `start_candidates` groups the todo tasks of the board's order by what holds them (`agent`,
   `person`, `decision`, `dependencies`, `qa_environment`, `merged`, `check`: a label that reads like a
   person's work the space does not mark, `not_here`), each with what its next start uses, the day a
@@ -1046,7 +1050,21 @@ time, two after errors, and a brief past 1,200 characters could not be read whol
 - `delivery` says one task's way from its PR/MR to accepted work: each step's state and fact, the stage
   (`in_work`, `waiting_for_merge`, `waiting_for_ci`, `waiting_for_stage`, `waiting_for_setup`,
   `ready_for_qa`, `qa_failed`, `qa_passed`, `accepted`), who acts next (agent, CI, deploy, owner, QA),
-  why Trello cannot be read from here, and a QA handoff text. `task.delivery` has its one line.
+  why Trello cannot be read from here, and a QA handoff text. `task.delivery` has its one line. For an
+  app card the steps are Code, one `APK <variant>` each, QA and Google Play, four facts that never stand
+  for one another (03-model.md, App delivery), and `app` carries the recorded variants, builds and
+  publication for an editor. `update_task` records them (`variants`, `environment`, `builds`, `play`).
+- Needs you (`overview.needs_you`) has two more kinds for a reconciled project: `merge` is one list of
+  every open PR/MR in the order to merge them (the card a PR/MR depends on first; those nothing holds
+  back before those something does), each with `ready` and its own `blockers` (CI, review, whether the
+  forge would merge it, dependencies; a dependency whose code is merged holds nothing back), and
+  `reconcile` groups the cards the rule leaves open that wait for the same thing. Both carry `cards`:
+  per card its id and title, `note`, `source` (where the decision comes from) and `links` to the
+  PR/MRs and the build, kept whole however many cards share a group. A PR/MR several cards name is one
+  row of the list with the others under `also`. A card that only waits (a check running, a dependency,
+  a run at work) is not listed; one whose step is an agent's (a draft to finish, a build to make) is,
+  since no run is assigned to take it. A live run's own need names the same
+  `cards` entry when the rule is on.
 
 ### Ready review
 

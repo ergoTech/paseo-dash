@@ -323,6 +323,26 @@ export class ForgeCli {
   }
 
   /**
+   * The project's open PR/MRs, newest first, at most `max`; with `search`, only those whose title or
+   * description has the words. Forks' are left out. Undefined when the CLI cannot tell.
+   */
+  async open(cwd: string, remote: string, options: { search?: string; max?: number } = {}, timeoutMs = TIMEOUT_MS): Promise<ForgePr[] | undefined> {
+    const max = String(Math.min(Math.max(options.max ?? 100, 1), 100));
+    if (forgeOf(remote) === "github") {
+      const args = ["pr", "list", "--state", "open", "--limit", max, "--json", GH_LIST_FIELDS];
+      if (options.search) args.push(`--search=${options.search} in:title,body`);
+      const result = await this.run("gh", args, cwd, timeoutMs);
+      const list = result.code === 0 ? parse<GhPr[]>(result.stdout) : undefined;
+      return Array.isArray(list) ? list.filter(ownGh).map(fromGh).filter((pr) => pr.state === "open") : undefined;
+    }
+    const args = ["mr", "list", "--per-page", max, "-F", "json"];
+    if (options.search) args.push(`--search=${options.search}`);
+    const result = await this.run("glab", args, cwd, timeoutMs);
+    const list = result.code === 0 ? parse<GlabMr[]>(result.stdout) : undefined;
+    return Array.isArray(list) ? list.filter(ownGlab).map(fromGlab).filter((mr) => mr.state === "open") : undefined;
+  }
+
+  /**
    * The repository's web URL and clone URLs as the forge's API names them, asked of `host` (GitLab
    * only: GitHub's web host is its remote's). Undefined when the host does not answer for the path.
    * It decides a project's `web_host` from the forge itself, never from host names that look alike.

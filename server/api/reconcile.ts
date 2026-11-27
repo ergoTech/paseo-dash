@@ -5,6 +5,7 @@ import type { LoadedEntity, Plan } from "../plan/load.ts";
 import { type MergedPr, mergedCandidates } from "../tracker/merged.ts";
 import { webHostProblem } from "../tracker/web-host.ts";
 import type { Dashboard } from "../dashboard.ts";
+import type { Verdict } from "../reconcile/verdict.ts";
 import { cut } from "./view.ts";
 import type { ReadContext } from "./reads.ts";
 import { resolveSpaces, resolveTaskForRead, type SpaceEntry } from "./resolve.ts";
@@ -40,8 +41,9 @@ export function reconcileNext(merged: MergedPr[], acceptance: { done: boolean }[
   return `its code is merged in ${where}, but ${open} of ${acceptance.length} acceptance lines are open (QA, manual or live checks): do those and tick them, then mark it done. Start it again only for what is left, never to redo the merged work.`;
 }
 
-function row(task: Task, loaded: LoadedEntity, merged: MergedPr[]): Row {
+function row(task: Task, loaded: LoadedEntity, merged: MergedPr[], held?: Verdict, rule?: string): Row {
   const open = loaded.acceptance.filter((a) => !a.done).map((a) => cut(a.text, 200));
+  const first = held?.holds[0];
   return {
     id: task.id,
     title: task.title,
@@ -50,8 +52,21 @@ function row(task: Task, loaded: LoadedEntity, merged: MergedPr[]): Row {
     merged: merged.map((pr) => ({ pr: pr.label, url: pr.url, sha: pr.sha ?? "", branch: pr.branch ?? "", merged_at: pr.merged_at, by: pr.by.join(", ") })),
     left: open.slice(0, RECONCILE_LEFT),
     left_count: open.length,
-    next: merged.length ? reconcileNext(merged, loaded.acceptance) : "",
+    next: held ? (first ? first.next : "nothing: everything is verified and the rule closes it") : merged.length ? reconcileNext(merged, loaded.acceptance) : "",
+    ...(held ? { verdict: held.close ? ("closes" as const) : ("held" as const), diagnosis: first ? cut(first.text, 300) : "", sources: held.sources.filter((s) => s.url), rule: rule ?? "" } : {}),
   };
+}
+
+/** What this Mac's reconciliation knows of a card, as a row; undefined for a project it does not reconcile. */
+function watchedRow(dashboard: Dashboard, space: SpaceEntry, task: Task, loaded: LoadedEntity): Row | undefined {
+  const rule = dashboard.reconciler.rule(space, task);
+  const verdict = rule ? dashboard.reconciler.verdict(space, task) : undefined;
+  if (!rule || !verdict) return undefined;
+  const facts = dashboard.reconciler.latest(space, task);
+  const merged: MergedPr[] = (facts?.prs ?? [])
+    .filter((pr) => pr.own && pr.state === "merged")
+    .map((pr) => ({ label: pr.label, url: pr.url, merged_at: pr.mergedAt, sha: pr.mergeSha, branch: pr.head, by: [] }));
+  return row(task, loaded, merged, verdict, rule.mode);
 }
 
 /** Each GitLab project of the spaces whose web host is not the one its forge serves, with the fix. */
@@ -87,6 +102,11 @@ export async function reconcile(ctx: ReadContext, input: RpcInput<typeof reconci
     const { entity: task, loaded, space } = found.value;
     const plan = space.sync.plan;
     const projects = hostProblems(dashboard, [space]).filter((p) => p.project === task.project);
+    if (dashboard.reconciler.rule(space, task)) {
+      await dashboard.reconciler.factsFor(space, task, TASK_WAIT_MS);
+      const watched = watchedRow(dashboard, space, task, loaded);
+      if (watched) return { tasks: [watched], projects, note: "", error: "" };
+    }
     if (!mergedCandidates(plan, task)) return { tasks: [], projects, note: notFollowed(plan, task), error: "" };
     const mapped = task.project ? space.record.mapping[task.project] : undefined;
     if (!mapped) return { tasks: [], projects, note: `Project ${task.project} is not mapped on this Mac: its forge cannot be asked from here.`, error: "" };
@@ -107,18 +127,31 @@ export async function reconcile(ctx: ReadContext, input: RpcInput<typeof reconci
   const spaces = resolveSpaces(dashboard, input.space);
   if (!spaces.ok) return fail(spaces.error);
   const rows: Row[] = [];
+  // Cards only the closing rule holds, without merged work: listed after those with it, counted apart.
+  const heldRows: Row[] = [];
   let total = 0;
+  let held = 0;
   for (const space of spaces.value) {
     for (const loaded of space.sync.plan.entities.values()) {
       const task = loaded.entity;
       if (task.type !== "task") continue;
+      const watched = watchedRow(dashboard, space, task, loaded);
       const merged = dashboard.merged.shown(space.sync.plan, task);
-      if (!merged.length) continue;
-      total += 1;
-      if (rows.length < ROWS) rows.push(row(task, loaded, merged));
+      if (watched?.merged.length || merged.length) {
+        total += 1;
+        if (rows.length < ROWS) rows.push(watched ?? row(task, loaded, merged));
+      } else if (watched) {
+        held += 1;
+        if (heldRows.length < ROWS) heldRows.push(watched);
+      }
     }
   }
   dashboard.merged.peek();
   const note = `${total ? `${total} open task${total === 1 ? "" : "s"} with merged work${total > ROWS ? `, the first ${ROWS} listed` : ""}` : "No open task has merged work"} as this Mac last read its forges; name one task to ask its forge now.`;
-  return { tasks: rows, projects: hostProblems(dashboard, spaces.value), note, error: "" };
+  return {
+    tasks: [...rows, ...heldRows].slice(0, ROWS),
+    projects: hostProblems(dashboard, spaces.value),
+    note: held ? `${note} ${held} more open card${held === 1 ? "" : "s"} without merged work held by this Mac's closing rule.` : note,
+    error: "",
+  };
 }

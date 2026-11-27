@@ -7,6 +7,7 @@ import { ScrollView, Text, View } from "react-native";
 import { useChanges } from "./changes.ts";
 import { DelegationSettings } from "./delegation.tsx";
 import { ManagedQueueSettings } from "./managed-queue.tsx";
+import { ReconcileSettings } from "./reconcile.tsx";
 import { RunSettings } from "./run-settings.tsx";
 import { spacesAddRpc, spacesDisconnectRpc, spacesListRpc, spacesSyncRpc } from "../shared/spaces.ts";
 import { PLAN_TOPIC, plansAvailableRpc, spacesCheckRpc } from "../shared/sharing.ts";
@@ -173,6 +174,7 @@ export function SpacesSettings({ theme, layout }: PluginSurfaceProps) {
       <PlanToolsSettings />
       <DelegationSettings />
       <ManagedQueueSettings />
+      <ReconcileSettings styles={styles} />
       <View />
     </ScrollView>
   );

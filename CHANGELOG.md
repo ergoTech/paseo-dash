@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Automatic reconciliation of finished work
+
+- Settings → Automatic closing (per project, per machine, off by default): **Report** says what is
+  left of each card whose work is on the forge, **Close** also closes the card, once, when its own
+  merged PR/MR, its checks, its acceptance, its scope and the plan all hold. The closing is written on
+  the card (`auto_closed`: when, on which machine, which PR/MRs, the facts). A merge with QA open, an
+  unreadable forge, a manual step, an open decision, a changed scope, another card's PR/MR, a PR/MR
+  still open or not read, a linked fork's PR/MR or an active run closes nothing and stops or restarts
+  nothing. A run's own merged PR/MR in such a project ends it only the same way under Close, and never
+  by itself under Report; it stays open and says what holds it otherwise.
+- The closing is a plan operation (`close`): it applies only on the card revision it was checked on,
+  with facts at most 15 minutes old, with the plan's holds and this machine's rule read again, so a
+  card the owner changed meanwhile, a replay after a restart or a second machine writes nothing twice.
+- Needs you: one `merge` list of every open PR/MR in the order to merge them, each with its own
+  blockers (CI, review, mergeability, dependencies), and `reconcile` groups for the cards left open,
+  with the links to each card's evidence and where its decision comes from. `reconcile` and the
+  overview carry the same facts for ChatGPT.
+- Apps: delivery keeps the code, a build per variant (phone, wear), QA and Google Play apart. One
+  recorded build covers every card whose merge commit it holds, when it is on the target branch and its
+  variant and environment match; a merge publishes nothing and an available build passes no test.
+- `meta.describe` grows from 22,431 to 23,108 bytes; its ceiling goes from 22 to 23 KiB (the fields
+  `update_task` records for apps, and two lines of description).
+
 ### Managed queue (pilot)
 
 - Settings → "Managed queue (pilot)", off by default: for one project, a switch, a limit of starts per

@@ -17,6 +17,12 @@ Starting a task creates a worktree workspace on a task branch and an agent whose
 - Work started directly in Paseo, outside the plan, listed per line, and a workspace can be tracked as a task.
 - Each plan repository also gets a generated `ROADMAP.md` with tables and Mermaid charts, and Obsidian Bases views, for people without Paseo.
 
+## Automatic closing
+
+Settings → Automatic closing switches a project, on this machine only, to Off (the default), Report or Close. A reconciled project compares each open card's merged pull or merge request with its own checks, ticked acceptance and the plan. Close writes `done` once, with the facts on the card, only when the merged request is the card's own, its checks pass, nothing was pushed after it, the card's scope did not change after the merge, and no QA, manual step, decision, dependency or run is left; a run's own merge ends it the same way (under Report a run's merge ends nothing by itself). Anything the plugin could not read leaves the card open. Needs you then lists, in one place, every open pull or merge request in the order to merge them with each one's blockers, and the other cards grouped by what they wait for, each with links to its evidence. Report only says what is left.
+
+For an app card, a merge, an installable staging build, QA's result and the Google Play state are four separate facts. One build covers every card whose merge commit it holds when it is on the target branch and its variant and environment match; the watch build is separate. A build being available marks no test passed.
+
 ## Setup
 
 - Paseo 0.13 or newer. Built and tested on macOS.

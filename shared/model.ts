@@ -117,6 +117,51 @@ const flag = z
   .optional()
   .transform((value) => (typeof value === "boolean" ? value : undefined));
 
+/** Where an app's release stands in Google Play; recorded, never inferred from a merge or a build. */
+export const PLAY_STATES = ["unpublished", "submitted", "published"] as const;
+
+/** One build QA can install (an APK): its variant (phone, wear), environment and the commit it was built from. */
+export interface Build {
+  variant: string;
+  environment: string;
+  sha: string;
+  url?: string;
+  version?: string;
+  at?: string;
+}
+
+/** The variant and environment of a build, or of a card, that names none. */
+export const DEFAULT_VARIANT = "phone";
+export const DEFAULT_ENVIRONMENT = "staging";
+
+function buildList(value: unknown): Build[] {
+  const out: Build[] = [];
+  for (const item of Array.isArray(value) ? value : []) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const str = (key: string) => {
+      const v = record[key];
+      if (v instanceof Date) return v.toISOString();
+      if (typeof v === "number") return String(v);
+      return typeof v === "string" && v.trim() ? v.trim() : undefined;
+    };
+    const sha = str("sha");
+    if (!sha) continue;
+    const url = str("url");
+    const version = str("version");
+    const at = str("at");
+    out.push({
+      variant: str("variant")?.toLowerCase() ?? DEFAULT_VARIANT,
+      environment: str("environment")?.toLowerCase() ?? DEFAULT_ENVIRONMENT,
+      sha,
+      ...(url ? { url } : {}),
+      ...(version ? { version } : {}),
+      ...(at ? { at } : {}),
+    });
+  }
+  return out;
+}
+
 /**
  * The way from a merged PR/MR to accepted work (03-model.md, Delivery): the build on stage, the flags
  * and access it needs, the device QA tests on, the Trello card and QA's result. Facts a person or an
@@ -156,6 +201,12 @@ export const deliverySchema = z
       qa: qa && (QA_RESULTS as readonly string[]).includes(qa) ? (qa as (typeof QA_RESULTS)[number]) : undefined,
       qa_note: str("qa_note"),
       qa_at: str("qa_at"),
+      /** The builds QA needs (phone, wear) and their environment; with these or `builds`, an app's delivery. */
+      variants: list("variants").map((v) => v.toLowerCase()),
+      environment: str("environment")?.toLowerCase(),
+      builds: buildList(record.builds),
+      play: PLAY_STATES.find((state) => state === str("play")),
+      play_at: str("play_at"),
     };
     return out;
   });
@@ -187,6 +238,27 @@ export const featureSchema = z.object({
   spec: text,
   order: z.number().nullish().transform((value) => value ?? undefined),
 });
+
+/**
+ * The record of a closure Paseo Dash made by itself under the owner's rule (server/reconcile): when,
+ * on which machine, the merged PR/MRs it stood on and the facts in words. A card that carries one is
+ * never closed by the rule again: reopened, it is the owner's.
+ */
+export const autoClosedSchema = z
+  .unknown()
+  .optional()
+  .transform((value) => {
+    if (value === undefined || value === null || value === "") return undefined;
+    const record = typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+    const str = (v: unknown) => (v instanceof Date ? v.toISOString() : typeof v === "string" ? v : "");
+    return {
+      at: str(record.at),
+      by: str(record.by),
+      prs: Array.isArray(record.prs) ? record.prs.filter((pr): pr is string => typeof pr === "string") : [],
+      note: str(record.note),
+    };
+  });
+export type AutoClosed = NonNullable<z.output<typeof autoClosedSchema>>;
 
 export const taskSchema = z.object({
   ...common,
@@ -241,6 +313,7 @@ export const taskSchema = z.object({
   readiness_note: text,
   /** From merged code to accepted work: stage build, flags, access, device, Trello card, QA. */
   delivery: deliverySchema,
+  auto_closed: autoClosedSchema,
 });
 
 export const spaceSchema = z.object({
