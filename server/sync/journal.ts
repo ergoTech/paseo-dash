@@ -10,6 +10,11 @@ import type { Operation } from "./ops.ts";
  */
 export interface JournalEntry {
   op: Operation;
+  /**
+   * A push carrying the operation began and was not answered with "nothing landed": it may be on
+   * origin, which only reading origin can tell.
+   */
+  sent?: true;
   inflight?: true;
   undecided?: { since: string; run_id: string; task: string };
 }
@@ -17,7 +22,12 @@ export interface JournalEntry {
 const journalSchema = z.object({
   version: z.literal(1),
   entries: z.array(
-    z.object({ op: z.record(z.string(), z.unknown()), inflight: z.literal(true).optional(), undecided: z.unknown().optional() }),
+    z.object({
+      op: z.record(z.string(), z.unknown()),
+      inflight: z.literal(true).optional(),
+      undecided: z.unknown().optional(),
+      sent: z.literal(true).optional(),
+    }),
   ),
   /** Claims reported as not started or gone; one that shows up on origin later is an orphan. */
   abandonedClaims: z.array(z.object({ run_id: z.string(), task: z.string() })).default([]),
@@ -58,6 +68,19 @@ export class Journal {
     if (!gone.size) return;
     this.entries = this.entries.filter((entry) => !gone.has(entry.op.op_id));
     this.save();
+  }
+
+  /** Marks operations a push is about to carry, or, once it says nothing landed, takes the mark off. */
+  markSent(opIds: Iterable<string>, sent: boolean): void {
+    const marked = new Set(opIds);
+    let changed = false;
+    for (const entry of this.entries) {
+      if (!marked.has(entry.op.op_id) || Boolean(entry.sent) === sent) continue;
+      if (sent) entry.sent = true;
+      else delete entry.sent;
+      changed = true;
+    }
+    if (changed) this.save();
   }
 
   /** What the ordinary write path may apply and push: never a claim. */

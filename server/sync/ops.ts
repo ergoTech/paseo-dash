@@ -24,6 +24,7 @@ import {
   type EntityDocument,
   newEntity,
   parseEntity,
+  replaceAcceptance,
   serializeEntity,
   setField,
   writeAcceptance,
@@ -31,6 +32,7 @@ import {
   writeHandoff,
 } from "../plan/document.ts";
 import { entityFileName } from "../plan/ids.ts";
+import { createRefusal, type DelegatedEdit, editRefusal, outsideRefusal, revisionOf, sameEdit, type Via } from "../delegation/rules.ts";
 import {
   editSpace,
   type LabelFields,
@@ -51,7 +53,14 @@ import { type LoadedEntity, type Plan, readEntityFile, realPathInside, validateE
  * file and re-applied on top of whatever origin has (05-architecture.md, Operations and I1–I4).
  */
 export type Operation =
-  | { op_id: string; kind: "create"; type: EntityType; id: string; fields: Record<string, unknown>; body: string }
+  /** With `via`, a coordinator's draft (server/delegation/rules.ts). */
+  | { op_id: string; kind: "create"; type: EntityType; id: string; fields: Record<string, unknown>; body: string; via?: Via }
+  /**
+   * A coordinator's change of one card under the owner's permission: all of it or none, only on the
+   * revision it was made from, with the card's rules checked again at every apply and the permission
+   * as SpaceSyncOptions.authorize says.
+   */
+  | { op_id: string; kind: "delegated"; id: string; via: Via; expect_rev: string; edit: DelegatedEdit }
   | { op_id: string; kind: "set"; id: string; field: string; value: unknown; expect: unknown }
   | { op_id: string; kind: "status"; id: string; to: TaskStatus; expect: TaskStatus }
   | { op_id: string; kind: "brief"; id: string; text: string; expect_hash: string }
@@ -115,6 +124,16 @@ export type Operation =
       /** Origin's tip when it was derived; a status edit on origin after it drops the transition. */
       since?: string;
     };
+
+/** A coordinator's operation: one that carries the permission it was asked under. */
+export type DelegatedOperation =
+  | Extract<Operation, { kind: "delegated" }>
+  | (Extract<Operation, { kind: "create" }> & { via: Via });
+
+export function delegationOf(op: Operation): DelegatedOperation | undefined {
+  if (op.kind === "delegated") return op;
+  return op.kind === "create" && op.via ? (op as DelegatedOperation) : undefined;
+}
 
 export interface RunFields {
   run_id: string;
@@ -255,6 +274,8 @@ function apply(ws: Workspace, plan: Plan, op: Operation, now: string): Outcome {
   switch (op.kind) {
     case "create": {
       if (!ID_PATTERN.test(op.id)) return { status: "refused", reason: `${op.id} is not a valid id` };
+      const forbidden = op.via ? createRefusal(plan, op.type, op.fields, op.via.project) : undefined;
+      if (forbidden) return { status: "refused", reason: forbidden };
       // A task for an issue some task already carries is that task: two machines importing one
       // issue make one draft (I2 applied to provenance instead of id; 09-forge-issues.md, option a).
       const issue = op.type === "task" && typeof op.fields.issue === "string" ? issueKey(op.fields.issue) : undefined;
@@ -293,6 +314,28 @@ function apply(ws: Workspace, plan: Plan, op: Operation, now: string): Outcome {
         if (locked) return { status: "refused", reason: locked };
       }
       return edit(ws, loaded, now, (document) => setField(document, op.field, op.value));
+    }
+
+    case "delegated": {
+      const loaded = ws.task(op.id);
+      if (!loaded) return { status: "refused", reason: `${op.id} is not a task` };
+      const outside = outsideRefusal(loaded.entity, op.via.project);
+      if (outside) return { status: "refused", reason: outside };
+      if (sameEdit(loaded, op.edit)) return { status: "already" };
+      const forbidden = editRefusal(plan, loaded, op.edit, op.via.project);
+      if (forbidden) return { status: "refused", reason: forbidden };
+      if (revisionOf(loaded) !== op.expect_rev) return { status: "refused", reason: `${op.id} changed meanwhile` };
+      const { brief, acceptance, priority, depends_on } = op.edit;
+      return edit(ws, loaded, now, (document) => {
+        if (brief !== undefined) document.body = writeBrief(document.body, demoteHeadings(brief));
+        if (acceptance !== undefined) document.body = replaceAcceptance(document.body, acceptance);
+        if (priority !== undefined && priority !== loaded.entity.priority) {
+          setField(document, "priority", priority);
+          // A rank is a place among the tasks of one priority: a new priority drops it.
+          setField(document, "rank", undefined);
+        }
+        if (depends_on !== undefined) setField(document, "depends_on", depends_on);
+      });
     }
 
     case "status": {

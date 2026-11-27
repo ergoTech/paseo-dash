@@ -14,6 +14,7 @@ import type {
 import type { tasksArchiveRpc, tasksArchiveWorkspaceRpc, tasksContinueRpc, tasksRankRpc, tasksSeenRpc, uiMoveRpc } from "../../shared/ui.ts";
 import { leftWorkspaces } from "../views.ts";
 import { closed, deliverySchema, type Entity, type EntityType, type Feature, hasLiveRun, lineLocked, type Milestone, refId, type Task, unheld } from "../../shared/model.ts";
+import { dependencyLoop } from "../plan/dependencies.ts";
 import { briefHash, clarificationEntry, isLastClarification, taskBody } from "../plan/document.ts";
 import { newId, opaqueId } from "../plan/ids.ts";
 import { SAFE_BRANCH } from "../sync/git.ts";
@@ -193,33 +194,6 @@ function taskLinks(space: SpaceEntry, asked: string[], self?: string, selfError 
     out.push(wikilink(found.value));
   }
   return { ok: true, value: out };
-}
-
-/**
- * The chain back to `self` that waiting for `deps` would close, as ids (`B → C → self`), or undefined:
- * a loop of dependencies blocks every task in it for good.
- */
-function dependencyLoop(plan: Plan, self: string, deps: string[]): string[] | undefined {
-  const waitsFor = (id: string) => {
-    const entity = plan.entities.get(id)?.entity;
-    return entity?.type === "task" ? entity.depends_on.map((ref) => refId(ref)).filter((d): d is string => Boolean(d)) : [];
-  };
-  for (const start of deps.map((d) => refId(d)).filter((d): d is string => Boolean(d))) {
-    const seen = new Set<string>();
-    const walk = (id: string, path: string[]): string[] | undefined => {
-      if (id === self) return path;
-      if (seen.has(id)) return undefined;
-      seen.add(id);
-      for (const next of waitsFor(id)) {
-        const found = walk(next, [...path, next]);
-        if (found) return found;
-      }
-      return undefined;
-    };
-    const found = walk(start, [start]);
-    if (found) return found;
-  }
-  return undefined;
 }
 
 // ---------------------------------------------------------------- inbox.add

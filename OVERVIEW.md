@@ -43,6 +43,20 @@ With God Mode 0.10 or newer, ChatGPT knows the plugin as Paseo Dash and takes «
 
 Settings → Agents → "Plan tools for every agent" (off by default) gives every agent on this machine whose repository is a project of a connected space three tools: search that space's tasks by words, read one task's brief and acceptance, and add a draft to the project's Inbox, so an agent can check for a duplicate before it proposes a task. They cannot start, move or edit tasks or reach other spaces. The tools come with each session's open: a new agent gets them at once, an agent already open only when its session next reopens, for example after Paseo restarts. Needs Paseo 0.14 or newer, for Claude, Codex, Copilot and OpenCode agents. In a permission mode that asks, each call asks.
 
+## Delegated planning (pilot)
+
+Settings → "Delegated planning (pilot)", off by default, lets you appoint one agent as the coordinator of one project: it can prepare that project's cards without being able to run them. You pick an open agent working in the project's repository and what it may do:
+
+- Write its own drafts: add Inbox drafts, and edit the brief and acceptance of those it added while they are still drafts.
+- Set priority: of drafts and todo cards.
+- Set dependencies: between cards of the project; it removes one from drafts only.
+
+Reload the agent afterwards: the tools come with a session's open. Needs Paseo 0.14 or newer, for Claude, Codex, Copilot and OpenCode agents. Settings lists every permission. Turning an action off or revoking the permission refuses the next call at once, and a change still waiting to be pushed is dropped at the next sync that reaches the plan repository; a push already under way is not stopped. Turning it on again does not bring a dropped change back. Settings and the task screen show the changes made, and those refused by the rules above, with who asked, when, and under which permission; the plan's commits name the agent and the permission too.
+
+A coordinator cannot start, release or move a task, touch labels, requirements (QA among them) or delivery facts, change a card with a live run or marked as a person's work, reach another project, change its own permission, or overwrite an edit newer than the one it read. A permission mode that asks still asks for each call. Priority and dependencies change what the autopilot picks next.
+
+What the limit does not cover: it binds the tools this plugin gives. An agent that runs shell commands as your user without asking can reach Paseo, the plugin's files and the plan repository itself. A change of the rules file while the plugin runs pauses every permission, dropping changes not pushed yet, until you save one again; a change made before a restart is not detected.
+
 ## Laconote
 
 The inbox imports action items from Laconote meetings as drafts, from a pasted Markdown export or, with an API key, from the meeting list. The key is stored only on this machine, in the plugin's data directory with file mode 0600, and is never written to the plan repository. The inbox also imports open issues from GitHub and GitLab, and a task can link to an issue: the agent is asked to reference it in its pull or merge request, so that a merge into the default branch closes it.

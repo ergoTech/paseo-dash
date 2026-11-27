@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Delegated planning (pilot)
+
+- Settings → "Delegated planning (pilot)", off by default: appoint an open agent as the coordinator of
+  one project and choose what it may do: write its own drafts, set priority, set dependencies. Its next
+  session gets the tools `coordinate_find`, `coordinate_task`, `coordinate_draft` and
+  `coordinate_plan`; no other agent gets anything new.
+- Changes go through the plan's journal with the permission, the card's rules and its revision
+  checked again before they are pushed: a revocation, a run, a mark of manual work or a newer edit
+  that arrives first refuses them, and a repeated call writes nothing twice.
+- Settings and the task screen show who changed or asked to change what, when and under which
+  permission; commits carry a `Dashboard-Delegated` trailer.
+- The limit covers these tools, not an agent with an unrestricted shell on the same Mac.
+
 ### Review before starting
 
 - Live's "Review before starting" and ChatGPT's `ready_review` look at the open cards of a space or a
