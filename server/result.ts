@@ -9,6 +9,7 @@ import { continueTask, ownerError, type WriteContext } from "./api/writes.ts";
 import type { PaseoApi } from "./paseo.ts";
 import { type CommandRunner, forgeOf, systemCommand } from "./tracker/forge.ts";
 import { prDetails } from "./tracker/details.ts";
+import { stoppedReading } from "./reconcile/stopped.ts";
 
 /**
  * Reviewing a task's result from the task screen (04-ux.md, Review and close): what its PR/MR holds
@@ -23,11 +24,22 @@ type TaskChecks = RpcOutput<typeof tasksResultRpc>;
 type AcceptCheck = RpcOutput<typeof acceptCheckRpc>;
 type SendBack = RpcOutput<typeof tasksSendBackRpc>;
 
-/** The PR/MR the task screen names: the tracker's view of the live run, else the run's recorded one. */
-export function resultUrl(ctx: WriteContext, task: Task): string {
+/** How long a read of a gone agent's card waits for its forge, before the PR/MR itself is read (Paseo stops waiting at 30 s). */
+const GONE_WAIT_MS = 12_000;
+
+/** The run's own PR/MR: the tracker's view of the live run, else the run's recorded one. */
+function runUrl(ctx: WriteContext, task: Task): string {
   const seen = ctx.dashboard.prs.seen.get(task.id);
   if (hasLiveRun(task) && seen && seen.run_id === task.run_id) return seen.url;
   return task.run_pr ?? "";
+}
+
+/**
+ * The PR/MR the task screen names: the tracker's view of the live run, else the run's recorded one,
+ * else, with the agent gone, what the forge shows of the task from any branch (reconcile/stopped.ts).
+ */
+export function resultUrl(ctx: WriteContext, task: Task): string {
+  return runUrl(ctx, task) || (stoppedReading(ctx.dashboard, task, ctx.host ?? localHost())?.url ?? "");
 }
 
 interface ReadResult {
@@ -46,6 +58,8 @@ async function readResult(ctx: WriteContext, asked: string, run: CommandRunner):
   const { found } = resolveTaskForRead([...ctx.dashboard.spaces.values()], asked);
   if (!found.ok) return { result: answer({ error: found.error }) };
   const { entity: task, space } = found.value;
+  // A card whose agent is gone may not have been read yet: ask before saying there is no PR/MR.
+  if (!resultUrl(ctx, task) && ctx.dashboard.reconciler.stoppedHold(space, task, ctx.host ?? localHost())) await ctx.dashboard.reconciler.readNow(space, task, GONE_WAIT_MS);
   const url = resultUrl(ctx, task);
   if (!url) return { task, result: answer({}) };
   const project = task.project ? space.sync.plan.space?.projects[task.project] : undefined;
@@ -183,7 +197,7 @@ export async function sendBack(ctx: WriteContext, paseo: PaseoApi, input: RpcInp
     await agent.send(input.comment.trim());
     return sent(task.status);
   }
-  await agent.send(feedbackText(task, input.comment, run.branch, Boolean(resultUrl(ctx, task)), Boolean(run.adopted)));
+  await agent.send(feedbackText(task, input.comment, run.branch, Boolean(runUrl(ctx, task)), Boolean(run.adopted)));
   // A tracked workspace's agent cannot report the work done again, and the tracker moves a run to
   // review only on a PR/MR it has not recorded yet: back in progress, the task would stay there until
   // the merge. So it stays in review, where its open PR/MR is (05-architecture.md, Tracking a Paseo

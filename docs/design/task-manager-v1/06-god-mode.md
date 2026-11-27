@@ -1049,7 +1049,7 @@ time, two after errors, and a brief past 1,200 characters could not be read whol
   usage limit's hold. It starts nothing and moves nothing.
 - `delivery` says one task's way from its PR/MR to accepted work: each step's state and fact, the stage
   (`in_work`, `waiting_for_merge`, `waiting_for_ci`, `waiting_for_stage`, `waiting_for_setup`,
-  `ready_for_qa`, `qa_unclear`, `qa_failed`, `qa_passed`, `accepted`), who acts next (agent, CI, deploy, owner, QA),
+  `ready_for_qa`, `qa_unclear`, `qa_failed`, `qa_passed`, `ready_to_accept`, `accepted`), who acts next (agent, CI, deploy, owner, QA),
   why Trello cannot be read from here, and a QA handoff text. `task.delivery` has its one line. For an
   app card the steps are Code, one `APK <variant>` each, QA and Google Play, four facts that never stand
   for one another (03-model.md, App delivery), and `app` carries the recorded variants, builds and

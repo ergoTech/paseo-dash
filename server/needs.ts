@@ -4,6 +4,7 @@ import type { Dashboard } from "./dashboard.ts";
 import type { RunRecord } from "./runner/runs.ts";
 import { cut, localHost, localRun } from "./api/view.ts";
 import { landedText } from "./tracker/landed.ts";
+import { stoppedReading } from "./reconcile/stopped.ts";
 
 /**
  * One task's state as every read tells it (06-god-mode.md, One state in every read): what its run's
@@ -83,6 +84,8 @@ export function waitState(dashboard: Dashboard, task: Task, host = localHost(), 
   if (need?.kind === "permission") return { state: "approval", note: need.why };
   if (need?.kind === "failed") return { state: "failed", note: need.why };
   if (need?.kind === "checkout") return { state: "checkout", note: need.why };
+  // Merged work of a card whose agent is gone: the agent is still gone, and the note says what is merged.
+  if (need?.kind === "merged" && (run ? run.activity === "stopped" : task.run_host === host)) return { state: run ? "stopped" : "record_lost", note: need.why };
   if (need?.kind === "stopped") return { state: run ? "stopped" : "record_lost", note: need.why };
   if (need?.kind === "answer") return { state: run?.waitingOn?.kind !== "user" && /^blocked: /.test(task.progress_note ?? "") ? "blocked" : "answer", note: need.why };
   if (!run) return task.run_host !== host ? { state: "elsewhere", note: `on ${task.run_host ?? "another machine"}` } : { state: claiming(dashboard, task) ? "launching" : "record_lost", note: "" };
@@ -165,7 +168,8 @@ export function runActivity(dashboard: Dashboard, task: Task, host = localHost()
 
 /**
  * What waits for the user on a task's live run, if anything: one fact per task, the strongest first.
- * The agent asking (a permission, or questions to the user) or failing; then the run's own PR/MR merged without the task done, which says more
+ * The agent asking (a permission, or questions to the user) or failing; then, with the agent gone, work of
+ * the task merged into the target branch; then the run's own PR/MR merged without the task done, which says more
  * than an agent waiting or gone after it; then, for a task in progress, its agent waiting after a
  * turn; then the PR/MR closed while nobody works on it; then no agent at work while the task is in
  * progress (gone, none known here, or a tracked trunk checkout's normal end, which only a person moves
@@ -191,6 +195,13 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost(), now
     return { ...need(kind, flat(`a sub-agent asks: ${child.text}`), kind === "question" ? NEXT.question.replace("the agent's chat", "the sub-agent's chat") : "answer it in the sub-agent's chat", run!.activityAt), chatId: child.agentId };
   }
   if (run?.activity === "failed") return need("failed", flat(run.error ?? "the agent failed"), NEXT.failed, run.activityAt);
+  // An agent gone while its run holds the task: work merged from any branch says more than "gone", and
+  // what is left of it is the step, never a second start of the same work (server/reconcile/stopped.ts).
+  const gone = stoppedReading(dashboard, task, host);
+  if (gone?.landed.length) return need("merged", flat(gone.why), gone.next, run?.activityAt ?? "");
+  // Nothing merged, but work of it standing: the agent is gone all the same, and the step is that work.
+  // A review whose run's own PR/MR is known waits for its merge as before.
+  if (gone?.pending.length && (open || (!own && !task.run_pr))) return need("stopped", flat(gone.why), gone.next, run?.activityAt ?? "");
   if (own?.state === "merged") {
     const left =
       task.status === "review"

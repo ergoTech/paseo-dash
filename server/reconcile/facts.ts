@@ -73,6 +73,40 @@ export interface ApkFact {
   build?: { sha: string; url: string; version: string };
 }
 
+/** An open PR/MR that names the card only in its description: a possible follow-up, never proof of anything. */
+export interface Mention {
+  url: string;
+  label: string;
+  draft: boolean;
+  title: string;
+}
+
+/**
+ * What a hold whose agent is gone reads beyond the rest (stopped.ts). It is kept apart on purpose: an
+ * automatic closing reads the fields around it and never this, so nothing here can loosen or change
+ * what the closing rule verifies.
+ */
+export interface GoneFacts {
+  /**
+   * Which stop this was read for (the run's last change of activity). A reading made while the agent
+   * worked, or before it worked again, says nothing of this stop.
+   */
+  stop: string;
+  /** What could not be read for it. */
+  unknown: string[];
+  /** Branches of the card's merges with commits pushed after their last one. */
+  pushed: { label: string; branch: string; tip: string }[];
+  /** The run branch's tip on origin when it is not known to be in the target branch, so it may carry unmerged work. */
+  ahead?: { branch: string; tip: string };
+  /**
+   * Whether the stage build recorded on the card holds every merge of the card, follow-ups included;
+   * `missing`, a merge it is not known to hold.
+   */
+  stage?: { sha: string; holds: "yes" | "no" | "unknown"; missing?: { label: string; sha: string } };
+  /** An app card's builds compared with every merge of the card. */
+  apks: ApkFact[];
+}
+
 export interface CardFacts {
   /** What the facts were read for (the card's links, its branch, the builds recorded): a change makes them old. */
   key: string;
@@ -88,6 +122,12 @@ export interface CardFacts {
   apks: ApkFact[];
   /** What the builds were compared for (the project's recorded builds, the card's variants): another value, compare again. */
   apksKey: string;
+  /** The run the card was held by when this was read ("" for none): a reading of an earlier run is not this hold's. */
+  run?: string;
+  /** Open PR/MRs that name the card in their description only. */
+  mentions?: Mention[];
+  /** What was read only because the card's agent is gone; absent otherwise. */
+  gone?: GoneFacts;
 }
 
 export const merged = (facts: CardFacts) => facts.prs.filter((pr) => pr.state === "merged");

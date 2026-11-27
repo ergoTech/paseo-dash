@@ -111,7 +111,7 @@ export const taskViewRpc = defineRpc({
      */
     merged: z.array(mergedPr),
     /** With a live run: what it waits on (shared/overview.ts WAIT_STATES) and the fact; null without one. */
-    wait: z.object({ state: z.string(), note: z.string() }).nullable(),
+    wait: z.object({ state: z.string(), note: z.string(), /** The one next step, for a card whose agent is gone with work merged. */ next: z.string().optional() }).nullable(),
     /** What it waits for besides tasks, each "kind: reason (checked day)". */
     requires: z.array(z.string()),
     /** A person's last check that it can start: "2026-11-24: access checked"; "" when nobody checked. */

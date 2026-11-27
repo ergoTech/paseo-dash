@@ -10,6 +10,7 @@ import { unreadCount } from "./events.ts";
 import { flat, needOf, runActivity, SYNC_NEXT, waitState } from "./needs.ts";
 import { cardLabel, qaNeed } from "./qa-cards.ts";
 import { reconcileNeeds } from "./reconcile/needs.ts";
+import { stoppedReading } from "./reconcile/stopped.ts";
 
 type Overview = RpcOutput<typeof overviewRpc>;
 
@@ -91,7 +92,9 @@ export function readOverview(dashboard: Dashboard, { space, limit }: RpcInput<ty
       const needed = needOf(dashboard, task, host);
       if (needed) {
         const held = dashboard.reconciler.heldRun(entry, task, needed);
-        need({ task: task.id, title: task.title, why: needed.why, next: held?.next ?? needed.next, chat_id: needed.chatId ?? run?.agentId ?? "", kind: needed.kind, space: key, ...(held ? { cards: held.cards } : {}) }, needed.since);
+        // Work found for a gone agent's card names its own step: the rule's hold on the claim would hide it.
+        const gone = stoppedReading(dashboard, task, host);
+        need({ task: task.id, title: task.title, why: needed.why, next: gone && needed.next === gone.next ? needed.next : (held?.next ?? needed.next), chat_id: needed.chatId ?? run?.agentId ?? "", kind: needed.kind, space: key, ...(held ? { cards: held.cards } : {}) }, needed.since);
       }
       if (task.status !== "in_progress") continue;
       result.running.push({ task: task.id, title: task.title, activity: runActivity(dashboard, task, host), state: waitState(dashboard, task, host).state, host: task.run_host ?? "", chat_id: run?.agentId ?? "", since: task.run_started ?? "" });

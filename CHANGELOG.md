@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Merged work of a run whose agent is gone
+
+- A task in progress or in review whose agent is gone on this Mac no longer reads as "no PR/MR": its
+  PR/MRs are read from any branch (issue closer, task id, link, run report) in every project, and Needs
+  you, the board, the task, `reconcile`, `delivery` and `task_result` show the merged work with one next
+  step (QA, stage build, decision, acceptance, release). A newer open or draft PR/MR, a merge outside
+  the target branch, pushed commits or an unread forge hold that step back. Nothing is closed, released
+  or started by this. Another machine's runs are unchanged.
+- Delivery has a new stage, `ready_to_accept`: merged, nothing left to test, the owner releases it.
+- `reconcile` of a held task asks the forge instead of answering that the task has a live run.
+
 ### QA cards after archiving
 
 - `update_task` takes `delivery.trello_cards`: QA cards as someone with Trello access just read them

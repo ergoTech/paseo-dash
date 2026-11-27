@@ -4,13 +4,17 @@ import type { Delivery, Task } from "../shared/model.ts";
 import { hasLiveRun, trelloShortLink } from "../shared/model.ts";
 import type { Dashboard } from "./dashboard.ts";
 import type { LoadedEntity, Plan } from "./plan/load.ts";
-import type { GitRunner } from "./sync/git.ts";
 import { localRun } from "./api/view.ts";
 import { resolveTaskForRead, type SpaceEntry } from "./api/resolve.ts";
-import { type ApkFact, named, type PrFact } from "./reconcile/facts.ts";
+import { named } from "./reconcile/facts.ts";
 import { apkText, environmentOf, isApp, variantsOf } from "./reconcile/android.ts";
 import { mergeBlockers } from "./reconcile/merge.ts";
-import { cardLabel, pendingRuns, type QaRun, type QaRunStatus, qaRuns, readAt } from "./qa-cards.ts";
+import { cardLabel, type QaRun, type QaRunStatus, readAt } from "./qa-cards.ts";
+import { type AppFacts, afterMerge, type DeliveryStage, type MergeFact, qaState, runStep, type StageHolds, short, stageHolds, trelloCard } from "./reconcile/steps.ts";
+import { ofCard, stoppedReading } from "./reconcile/stopped.ts";
+
+export { DELIVERY_STAGES, stageHolds, trelloCard } from "./reconcile/steps.ts";
+export type { AppFacts, DeliveryStage, StageHolds } from "./reconcile/steps.ts";
 
 /**
  * The way from merged code to accepted work (03-model.md, Delivery; JOBBY-YV2QS part 5): the PR/MR
@@ -25,35 +29,6 @@ import { cardLabel, pendingRuns, type QaRun, type QaRunStatus, qaRuns, readAt } 
  * ready to post on the card. A QA card still open, never read or archived with no known replacement
  * stays in view, also on a task whose code is merged or that is done.
  */
-
-export const DELIVERY_STAGES = [
-  "in_work",
-  "waiting_for_merge",
-  "waiting_for_ci",
-  "waiting_for_stage",
-  "waiting_for_setup",
-  "ready_for_qa",
-  "qa_unclear",
-  "qa_failed",
-  "qa_passed",
-  "accepted",
-] as const;
-export type DeliveryStage = (typeof DELIVERY_STAGES)[number];
-
-/** Whether the stage build holds the merge commit, as git in the project's checkout tells it. */
-export type StageHolds = "yes" | "no" | "unknown";
-
-/**
- * An app card's PR/MRs (every one it names) and the builds that cover it (03-model.md, App delivery): the code, the build
- * for each variant, QA and the publication are four states that stand apart.
- */
-export interface AppFacts {
-  prs: (Pick<PrFact, "label" | "url" | "state" | "mergedAt"> & { sha: string; blockers: string[] })[];
-  apks: ApkFact[];
-  trunk: string;
-  /** Why not every PR/MR of the card could be read; "" when all were. */
-  unread: string;
-}
 
 /** What this Mac lacks, and what reading Trello by itself would take. */
 const TRELLO_BLOCKER =
@@ -72,11 +47,6 @@ export interface DeliveryView {
   qa_handoff: string;
   /** The task's QA cards with what each says is left; absent with none recorded. */
   qa_cards?: { url: string; label: string; status: QaRunStatus; checked: string }[];
-}
-
-/** The Trello card of the task: delivery's, else a trello.com card among its links. */
-export function trelloCard(task: Task): string {
-  return task.delivery?.trello ?? task.links.find((link) => /^https:\/\/trello\.com\/c\//i.test(link.trim()))?.trim() ?? "";
 }
 
 /** One QA card as a step: its state as last read, where it leads and who tests it next. */
@@ -119,35 +89,6 @@ function qaStep({ card, status }: QaRun, all: QaRun[], recorded: Partial<Deliver
   };
 }
 
-/** Who a pending run waits for and what they do, in one line. */
-function runStep(pending: QaRun[]): Pick<DeliveryView, "next_by" | "next"> {
-  const unclear = pending.filter((run) => run.status === "unclear");
-  if (unclear.length) {
-    return {
-      next_by: "owner",
-      next: `Trello ${unclear.map((run) => cardLabel(run.card)).join(", ")} archived with no known replacement: record where its QA went (replaced_by with evidence) or the proof it ran (update_task delivery trello_cards)`,
-    };
-  }
-  const open = pending.filter((run) => run.status === "open");
-  if (open.length) {
-    return {
-      next_by: "QA",
-      next: `the acceptance run is open on Trello ${open.map((run) => `${cardLabel(run.card)} (${run.card.tester ?? "nobody named"}, read ${readAt(run.card.checked!)})`).join(", ")}: record its result, and its proof on the card's reading`,
-    };
-  }
-  return {
-    next_by: "owner",
-    next: `Trello ${pending.map((run) => cardLabel(run.card)).join(", ")} not read yet: someone with Trello access reads it and records it (update_task delivery trello_cards)`,
-  };
-}
-
-interface MergeFact {
-  label: string;
-  url: string;
-  state: string;
-  sha: string;
-}
-
 /** How a person names a PR/MR by its URL: `#7`, `!12`; the URL itself when it names no number. */
 export function prLabel(url: string): string {
   return url.replace(/^.*\/(?:pull\/|merge_requests\/)(\d+)\/?$/, (_, n: string) => (url.includes("/pull/") ? `#${n}` : `!${n}`));
@@ -162,18 +103,6 @@ function mergeOf(dashboard: Dashboard, plan: Plan, task: Task): MergeFact | unde
   if (task.run_pr) return { label: prLabel(task.run_pr), url: task.run_pr, state: task.status === "done" ? "merged" : "recorded", sha: "" };
   return undefined;
 }
-
-/** Whether `stage` holds `merge` (both commits known to the checkout): git merge-base --is-ancestor. */
-export async function stageHolds(git: GitRunner, root: string | undefined, merge: string, stage: string): Promise<StageHolds> {
-  if (!root || !/^[0-9a-f]{7,64}$/i.test(merge) || !/^[0-9a-f]{7,64}$/i.test(stage)) return "unknown";
-  if (stage.toLowerCase().startsWith(merge.toLowerCase()) || merge.toLowerCase().startsWith(stage.toLowerCase())) return "yes";
-  const result = await git.run(root, ["merge-base", "--is-ancestor", merge, stage], 10_000).catch(() => undefined);
-  if (!result || result.timedOut) return "unknown";
-  // 0: an ancestor; 1: not; anything else (a commit the checkout does not have): unknown.
-  return result.code === 0 ? "yes" : result.code === 1 ? "no" : "unknown";
-}
-
-const short = (sha: string) => sha.slice(0, 7);
 
 /**
  * The delivery view of a task; pure but for `holds`, which the caller reads from git first.
@@ -191,16 +120,7 @@ export function deliveryView(input: {
   const d: Partial<Delivery> = task.delivery ?? {};
   const open = loaded.acceptance.filter((a) => !a.done);
   const steps: DeliveryView["steps"] = [];
-  const runs = qaRuns(task.qa_cards ?? []);
-  const pending = pendingRuns(task.qa_cards);
-  const unclear = pending.some((run) => run.status === "unclear");
-  const linked = trelloCard(task);
-  const linkedRun = runs.find((run) => trelloShortLink(run.card.url) === trelloShortLink(linked));
-  const openRun = pending.find((run) => run.status === "open");
-  // The card to work on: the linked one, unless it is finished or replaced; then the one still pending.
-  const current = !linked || (linkedRun && linkedRun.status !== "open") ? (openRun ?? pending.find((run) => run.status === "unread")) : linkedRun;
-  const card = current?.card.url ?? (linkedRun ? "" : linked);
-  const tester = current?.card.tester ? `, tester ${current.card.tester}` : "";
+  const { runs, pending, unclear, linked, linkedRun } = qaState(task);
 
   steps.push({ step: "MR", state: merge?.state ?? "none", fact: merge ? `${merge.label} ${merge.state}${merge.sha ? ` (${short(merge.sha)})` : ""}` : "no PR/MR known" });
   steps.push({ step: "CI", state: checks ?? "unknown", fact: checks ? `checks ${checks}` : "not read here (task_result reads it)" });
@@ -252,12 +172,6 @@ export function deliveryView(input: {
   }
   if (task.auto_closed) steps.push({ step: "Closed", state: "by rule", fact: `${task.auto_closed.at.slice(0, 10)} on ${task.auto_closed.by}: ${task.auto_closed.note}` });
 
-  const setupMissing = [
-    d.flags_ready === false || (d.flags?.length && d.flags_ready === undefined) ? `flags ${d.flags?.join(", ") || ""}`.trim() : "",
-    d.access_ready === false ? "access" : "",
-    d.device && !d.device_ready ? `device ${d.device}` : "",
-  ].filter(Boolean);
-
   const decide = (): Pick<DeliveryView, "stage" | "next_by" | "next"> => {
     if (task.status === "done") {
       if (!pending.length) return { stage: "accepted", next_by: "", next: "nothing: the task is done" };
@@ -275,39 +189,7 @@ export function deliveryView(input: {
       if (checks === "pending" || checks === "waiting") return { stage: "waiting_for_ci", next_by: "CI", next: `${merge.label}'s checks run; then review and merge` };
       return { stage: "waiting_for_merge", next_by: "owner", next: `${merge.label} waits for review and merge` };
     }
-    const unmerged = app?.prs.find((pr) => pr.state === "open" || pr.state === "draft");
-    if (unmerged) return { stage: "waiting_for_merge", next_by: "owner", next: `${unmerged.label} of the card is not merged yet${unmerged.blockers.length ? `: ${unmerged.blockers[0]}` : ""}` };
-    if (d.qa === "failed") return { stage: "qa_failed", next_by: "agent", next: `QA failed${d.qa_note ? `: ${d.qa_note}` : ""}; send it back with what failed, or start it again for the fix` };
-    // An archived card nothing replaces holds acceptance back until someone says where its QA went.
-    if (unclear) return { stage: "qa_unclear", ...runStep(pending) };
-    if (d.qa === "passed") {
-      if (pending.length) return { stage: "qa_passed", next_by: "owner", next: `QA passed is recorded, but ${runStep(pending).next}` };
-      return open.length
-        ? { stage: "qa_passed", next_by: "owner", next: `QA passed; ${open.length} acceptance line(s) still open: tick what QA covered, then accept it (mark done)` }
-        : { stage: "qa_passed", next_by: "owner", next: "QA passed and every acceptance line is ticked: accept it (mark done)" };
-    }
-    if (app) {
-      const missing = app.apks.find((apk) => apk.state !== "available");
-      if (missing) {
-        return {
-          stage: "waiting_for_stage",
-          next_by: missing.state === "unknown" ? "owner" : "deploy",
-          next: `${missing.variant} APK for ${missing.environment}: ${missing.why}${missing.state === "awaited" ? `; build it from ${app.trunk || "the target branch"} and record it (update_task delivery builds)` : ""}`,
-        };
-      }
-    } else if (!stageFact) return { stage: "waiting_for_stage", next_by: "deploy", next: `${merge.label} is merged; no stage build is recorded: deploy to stage and record its build (update_task delivery stage_sha)` };
-    if (!app && holds === "no") return { stage: "waiting_for_stage", next_by: "deploy", next: `stage runs build ${short(d.stage_sha ?? "")}, older than the merge ${short(merge.sha)}: deploy the merge to stage` };
-    if (!app && holds === "unknown" && d.stage_sha && merge.sha) {
-      return { stage: "waiting_for_stage", next_by: "owner", next: `whether stage build ${short(d.stage_sha)} holds the merge ${short(merge.sha)} is not known here (fetch the project's checkout, or check the deploy)` };
-    }
-    if (setupMissing.length) return { stage: "waiting_for_setup", next_by: "owner", next: `before QA: ${setupMissing.join("; ")}` };
-    // A card named but never read: its state, and who tests it, are not known yet.
-    if (pending.length && !openRun) return { stage: "ready_for_qa", ...runStep(pending) };
-    if (app) {
-      const links = app.apks.map((apk) => `${apk.variant} ${apk.build?.url ?? ""}`.trim()).join(", ");
-      return { stage: "ready_for_qa", next_by: "QA", next: `QA installs ${links} and tests it${card ? ` (Trello: ${card}${tester})` : ""}; the build being there marks no test passed` };
-    }
-    return { stage: "ready_for_qa", next_by: "QA", next: card ? `QA tests on stage; hand the card over with the QA handoff (Trello: ${card}${tester})` : "QA tests on stage with the QA handoff" };
+    return afterMerge({ task, open: open.length, merge, holds, ...(app ? { app } : {}), finish: "accept it (mark done)", failed: "send it back with what failed, or start it again for the fix" });
   };
   const { stage, next_by, next } = decide();
 
@@ -334,7 +216,8 @@ export function deliveryView(input: {
 }
 
 /** Whether a task has delivery to show: recorded facts, a Trello card, or merged work. */
-export function hasDelivery(dashboard: Dashboard, plan: Plan, task: Task): boolean {
+export function hasDelivery(dashboard: Dashboard, plan: Plan, task: Task, host?: string): boolean {
+  if (stoppedReading(dashboard, task, host)?.landed.length) return true;
   return Boolean(task.delivery) || Boolean(task.qa_cards) || Boolean(task.auto_closed) || Boolean(trelloCard(task)) || dashboard.merged.shown(plan, task).length > 0 || (Boolean(task.run_pr) && (task.status === "review" || task.status === "done"));
 }
 
@@ -346,7 +229,8 @@ async function appFacts(dashboard: Dashboard, space: SpaceEntry, task: Task): Pr
     const why = "this Mac has not read the card's PR/MRs and builds yet: read again in a minute";
     return { prs: [], apks: variantsOf(task).map((variant) => ({ variant, environment, state: "unknown" as const, why })), trunk: "", unread: why };
   }
-  const own = facts.prs.filter((pr) => named(pr) && pr.state !== "closed");
+  // For a hold whose agent is gone, the card's work as its other checks cover it (reconcile/stopped.ts).
+  const own = facts.prs.filter((pr) => (facts.gone ? ofCard(pr, facts.trunk) : named(pr)) && pr.state !== "closed");
   const noChecksOk = Boolean(dashboard.reconciler.rule(space, task)?.no_checks_ok);
   const prs = own.map((pr) => ({
     label: pr.label,
@@ -356,31 +240,48 @@ async function appFacts(dashboard: Dashboard, space: SpaceEntry, task: Task): Pr
     sha: pr.mergeSha,
     blockers: pr.state === "open" || pr.state === "draft" ? mergeBlockers(space.sync.plan, task, facts, pr, new Map(), noChecksOk, (id) => dashboard.reconciler.codeMerged(space, id)) : [],
   }));
-  return { prs, apks: facts.apks, trunk: facts.trunk, unread: facts.unknown[0] ?? facts.limits[0]?.why ?? "" };
+  return { prs, apks: facts.gone?.apks ?? facts.apks, trunk: facts.trunk, unread: facts.unknown[0] ?? facts.gone?.unknown[0] ?? facts.limits[0]?.why ?? "" };
 }
 
 /** The view of one task, reading git for the stage comparison. */
-export async function readDelivery(dashboard: Dashboard, plan: Plan, mapping: Record<string, string | null>, task: Task, loaded: LoadedEntity, space?: SpaceEntry): Promise<DeliveryView> {
+export async function readDelivery(dashboard: Dashboard, plan: Plan, mapping: Record<string, string | null>, task: Task, loaded: LoadedEntity, space?: SpaceEntry, host?: string): Promise<DeliveryView> {
+  // A card whose agent is gone is delivered by what is merged of it, from any branch, and says the
+  // same next step as its other reads (reconcile/stopped.ts). The forge is waited for once: an app
+  // card's own read, else this one, short enough for the run history a task read adds after it.
   const app = space && isApp(task) ? await appFacts(dashboard, space, task) : undefined;
+  if (space && !app && dashboard.reconciler.stoppedHold(space, task, host)) await dashboard.reconciler.factsFor(space, task, 15_000);
+  const gone = stoppedReading(dashboard, task, host);
   const ours = app?.prs.filter((pr) => pr.state === "merged").sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0] ?? app?.prs[0];
-  const merge = ours ? { label: ours.label, url: ours.url, state: ours.state === "draft" ? "draft" : ours.state, sha: ours.sha } : mergeOf(dashboard, plan, task);
+  // The card's merged work, else its work still open: either says more than "no PR/MR of its run".
+  const landed = gone?.landed[0];
+  const found = landed ?? (gone?.pending.length ? gone.open[0] : undefined);
+  const merge = found
+    ? { label: found.label, url: found.url, state: found.state, sha: found.mergeSha }
+    : ours
+      ? { label: ours.label, url: ours.url, state: ours.state === "draft" ? "draft" : ours.state, sha: ours.sha }
+      : mergeOf(dashboard, plan, task);
   const run = hasLiveRun(task) ? localRun(dashboard.runs, task) : undefined;
-  const checks = run ? dashboard.waits.facts.get(run.run_id)?.checks : undefined;
+  const checks = found ? found.checks?.state : run ? dashboard.waits.facts.get(run.run_id)?.checks : undefined;
   const projectId = task.project ? mapping[task.project] : undefined;
   const root = projectId ? dashboard.projectRoots.get(projectId) : undefined;
-  const holds = merge?.sha && task.delivery?.stage_sha ? await stageHolds(dashboard.git, root, merge.sha, task.delivery.stage_sha) : "unknown";
-  return deliveryView({ task, loaded, merge, checks, holds, ...(app ? { app } : {}) });
+  // A gone hold's reading compared the stage with every merge of the card, not only the latest.
+  const holds = gone?.holds ?? (merge?.sha && task.delivery?.stage_sha ? await stageHolds(dashboard.git, root, merge.sha, task.delivery.stage_sha) : "unknown");
+  const view = deliveryView({ task, loaded, merge, checks, holds, ...(app ? { app } : {}) });
+  if (!gone || !(gone.landed.length || gone.pending.length)) return view;
+  const more = [...gone.landed.slice(1), ...gone.related].map((pr) => `${pr.label} merged`);
+  const steps = view.steps.map((step) => (step.step === "MR" && (more.length || gone.pending.length) ? { ...step, fact: [step.fact, ...more, ...gone.pending.map((p) => p.text)].join("; ") } : step));
+  return { ...view, steps, stage: gone.stage, next_by: gone.next_by, next: gone.next };
 }
 
 /** God Mode's `delivery` read: one task's way to accepted work. */
-export async function taskDelivery(ctx: { dashboard: Dashboard }, input: RpcInput<typeof tasksDeliveryRpc>): Promise<RpcOutput<typeof tasksDeliveryRpc>> {
+export async function taskDelivery(ctx: { dashboard: Dashboard; host?: string }, input: RpcInput<typeof tasksDeliveryRpc>): Promise<RpcOutput<typeof tasksDeliveryRpc>> {
   const empty = { id: "", title: "", stage: "", next_by: "", next: "", steps: [], trello_blocker: "", qa_handoff: "" };
   const dashboard = ctx.dashboard;
   if (!dashboard.owner && dashboard.ownerReason) return { ...empty, error: dashboard.ownerReason };
   const { found } = resolveTaskForRead([...dashboard.spaces.values()], input.task);
   if (!found.ok) return { ...empty, error: found.error };
   const { entity: task, loaded, space } = found.value;
-  const view = await readDelivery(dashboard, space.sync.plan, space.record.mapping, task, loaded, space);
+  const view = await readDelivery(dashboard, space.sync.plan, space.record.mapping, task, loaded, space, ctx.host);
   const d = task.delivery;
   const app = isApp(task)
     ? { variants: variantsOf(task), environment: environmentOf(task), builds: (d?.builds ?? []).map((b) => ({ variant: b.variant, environment: b.environment, sha: b.sha, url: b.url ?? "", version: b.version ?? "" })), play: d?.play ?? "" }
