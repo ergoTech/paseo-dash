@@ -28,8 +28,8 @@ test("the budget is what was measured plus 5%, and a reply over it by one byte i
   }
 });
 
-test("meta.describe has a ceiling of 22 KiB that the room never lifts", () => {
-  assert.equal(DESCRIBE_CEILING, 22528);
+test("meta.describe has a ceiling of 23 KiB that the room never lifts", () => {
+  assert.equal(DESCRIBE_CEILING, 23552);
   assert.ok(budgetOf("meta.describe") <= DESCRIBE_CEILING);
   assert.ok(MEASURED["meta.describe"] <= DESCRIBE_CEILING, "the measured description itself fits");
 });

@@ -21,9 +21,12 @@ export const overviewInput = z.object({
  * end is the normal one, not a failure, yet only a person moves the task on), and work to decide on:
  * a PR/MR `closed` without a merge, `merged` without the task done, `accept` for a task in review with
  * no PR/MR. A task in review whose PR/MR is open waits for its merge on the forge and is listed under
- * `review` instead.
+ * `review` instead. In a project this machine reconciles (server/reconcile) the open PR/MRs are also one
+ * `merge` list, in the order to merge them, each with its own blockers, and every other card the rule
+ * left open is a `reconcile` group, cards that wait for the same thing together, each with the links to
+ * what the decision rests on.
  */
-export const NEEDS_KINDS = ["permission", "question", "failed", "sync", "answer", "stopped", "checkout", "closed", "merged", "accept"] as const;
+export const NEEDS_KINDS = ["permission", "question", "failed", "sync", "answer", "stopped", "checkout", "closed", "merged", "accept", "merge", "reconcile"] as const;
 export type NeedsKind = (typeof NEEDS_KINDS)[number];
 
 /**
@@ -53,6 +56,24 @@ export type WaitState = (typeof WAIT_STATES)[number];
 /** A live run's agent as the reads say it (overview.running, autopilot.read's runs). */
 export const RUN_ACTIVITIES = ["launching", "working", "waiting", "failed", "stopped"] as const;
 
+/** One card of a `merge` list or a `reconcile` group, with where its decision comes from. */
+export const needCard = z.object({
+  task: z.string(),
+  title: z.string(),
+  /** What is left on this card: its diagnosis, or for a PR/MR in the merge list its blockers in a line. */
+  note: z.string(),
+  /** Where the decision rests: "#41 merged", "space.yaml defaults.human_labels", "phone APK abc1234". */
+  source: z.string(),
+  /** The evidence: the card's PR/MRs, the build. Kept whole, however many cards share a group. */
+  links: z.array(z.object({ label: z.string(), url: z.string() })),
+  /** A merge list's place (1 merges first), whether it can merge now, and each blocker apart. */
+  order: z.number().int().optional(),
+  ready: z.boolean().optional(),
+  blockers: z.array(z.string()).optional(),
+  /** Other cards that name the same PR/MR of a merge list. */
+  also: z.array(z.string()).optional(),
+});
+
 export const overviewOutput = z.object({
   needs_you: z.array(
     z.object({
@@ -66,6 +87,8 @@ export const overviewOutput = z.object({
       space: z.string(),
       /** Since when it waits, ISO time, where known; else "". */
       since: z.string(),
+      /** The cards behind a `merge` list or a `reconcile` group, or the one a live run's need rests on. */
+      cards: z.array(needCard).optional(),
     }),
   ),
   running: z.array(

@@ -446,7 +446,7 @@ export async function getTaskWithRuns(ctx: ReadContext, input: RpcInput<typeof t
   const now = clock(ctx);
   const { entity: task, loaded, space } = found.value;
   if (task.type === "task" && hasDelivery(ctx.dashboard, space.sync.plan, task)) {
-    const view = await readDelivery(ctx.dashboard, space.sync.plan, space.record.mapping, task, loaded);
+    const view = await readDelivery(ctx.dashboard, space.sync.plan, space.record.mapping, task, loaded, space);
     read.delivery = cut(`${view.stage}; next ${view.next_by || "nobody"}: ${view.next}`, 300);
   }
   const history = await historyWithin(ctx.dashboard, found.value.space.sync, found.value.loaded);

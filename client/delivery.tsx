@@ -1,4 +1,5 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
+import type { RpcOutput } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Modal } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -39,13 +40,35 @@ export function DeliverySection({ task, styles, theme }: { task: string; styles:
           </Text>
         </View>
       ) : null}
-      {editing ? <DeliveryEditor task={task} onClose={() => setEditing(false)} styles={styles} theme={theme} /> : null}
+      {editing ? <DeliveryEditor task={task} app={d.app} onClose={() => setEditing(false)} styles={styles} theme={theme} /> : null}
     </Section>
   );
 }
 
+type Builds = NonNullable<RpcOutput<typeof tasksDeliveryRpc>["app"]>["builds"];
+
+/** A recorded build as its editor line: "variant:environment sha url version"; a url left out is "-". */
+const buildLine = (b: Builds[number]) => [`${b.variant}:${b.environment}`, b.sha, b.url || (b.version ? "-" : ""), b.version].filter(Boolean).join(" ");
+
+/**
+ * The editor's lines as builds. A line without an environment takes the card's. `bad` names the first
+ * line that is not a build: the list replaces the recorded one, so nothing is dropped silently.
+ */
+function parseBuilds(text: string, environment: string | undefined): { builds: { variant: string; environment?: string; sha: string; url?: string; version?: string }[]; bad: string } {
+  const builds: ReturnType<typeof parseBuilds>["builds"] = [];
+  for (const line of text.split("\n").map((l) => l.trim()).filter(Boolean)) {
+    const [name, sha, url, version, ...rest] = line.split(/\s+/);
+    const [variant, own] = (name ?? "").split(":");
+    const link = url && url !== "-" ? url : undefined;
+    if (!variant || !sha || !/^[0-9a-fA-F]{7,64}$/.test(sha) || (link && !/^https:\/\/\S+$/.test(link)) || rest.length) return { builds: [], bad: line };
+    const env = own || environment;
+    builds.push({ variant, ...(env ? { environment: env } : {}), sha, ...(link ? { url: link } : {}), ...(version ? { version } : {}) });
+  }
+  return { builds, bad: "" };
+}
+
 /** Records delivery facts: a field left empty is left as it is; "Clear" takes a recorded one off. */
-function DeliveryEditor({ task, onClose, styles, theme }: { task: string; onClose: () => void; styles: Styles; theme: Theme }) {
+function DeliveryEditor({ task, app, onClose, styles, theme }: { task: string; app: RpcOutput<typeof tasksDeliveryRpc>["app"]; onClose: () => void; styles: Styles; theme: Theme }) {
   const update = useRpc(tasksUpdateRpc);
   const refresh = useRefresh();
   const [stageSha, setStageSha] = useState("");
@@ -60,6 +83,12 @@ function DeliveryEditor({ task, onClose, styles, theme }: { task: string; onClos
   const [trelloState, setTrelloState] = useState("");
   const [qa, setQa] = useState<"" | "pending" | "passed" | "failed">("");
   const [qaNote, setQaNote] = useState("");
+  // An app's builds: the whole list, one per line; it replaces the recorded one.
+  const [variants, setVariants] = useState(app?.variants.join(", ") ?? "");
+  const recorded = app?.builds.map(buildLine).join("\n") ?? "";
+  const [builds, setBuilds] = useState(recorded);
+  const parsed = parseBuilds(builds, app?.environment);
+  const [play, setPlay] = useState<"" | "unpublished" | "submitted" | "published">("");
   const keep = (text: string) => (text.trim() ? text.trim() : undefined);
   const saving = useMutation({
     mutationFn: () =>
@@ -78,6 +107,9 @@ function DeliveryEditor({ task, onClose, styles, theme }: { task: string; onClos
           trello_state: keep(trelloState),
           qa: qa || undefined,
           qa_note: keep(qaNote),
+          variants: variants.trim() === (app?.variants.join(", ") ?? "") ? undefined : variants.split(",").map((v) => v.trim().toLowerCase()).filter(Boolean),
+          builds: builds === recorded ? undefined : parsed.builds,
+          play: play || undefined,
         },
       }),
     onSuccess: (answer) => {
@@ -113,10 +145,26 @@ function DeliveryEditor({ task, onClose, styles, theme }: { task: string; onClos
           styles={styles}
         />
         <Field label="QA note" value={qaNote} onChange={setQaNote} styles={styles} theme={theme} multiline />
+        <Text style={styles.muted}>For an app: a build covers every card of the project whose merge it holds; being available passes no test, and a merge publishes nothing.</Text>
+        <Field label="Builds QA needs, comma-separated" value={variants} onChange={setVariants} styles={styles} theme={theme} placeholder="phone, wear" />
+        <Field label="Recorded builds, one per line: variant:environment sha url version (replaces the list)" value={builds} onChange={setBuilds} styles={styles} theme={theme} multiline placeholder="phone:staging 5e1f0c4 https://apk.example.com/staging.apk 1.4.0" />
+        {parsed.bad ? <Text style={styles.error}>{`Not a build line: ${parsed.bad}`}</Text> : null}
+        <Choice
+          label="Google Play"
+          options={[
+            { value: "unpublished", label: "Not published" },
+            { value: "submitted", label: "Submitted" },
+            { value: "published", label: "Published" },
+          ]}
+          value={play}
+          onChange={setPlay}
+          none="Unchanged"
+          styles={styles}
+        />
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <Actions styles={styles}>
           <Button label="Close" ghost onPress={onClose} styles={styles} />
-          <Button label={saving.isPending ? "Saving…" : "Save"} disabled={saving.isPending} onPress={() => saving.mutate()} styles={styles} />
+          <Button label={saving.isPending ? "Saving…" : "Save"} disabled={saving.isPending || (builds !== recorded && Boolean(parsed.bad))} onPress={() => saving.mutate()} styles={styles} />
         </Actions>
       </Modal.Content>
     </Modal>

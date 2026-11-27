@@ -80,6 +80,12 @@ export interface SpaceSyncOptions {
    * plan for people to edit on top of, and one that landed is never called refused.
    */
   authorize?: (op: DelegatedOperation) => string | undefined;
+  /**
+   * Why the owner's rule does not let this closure be written now (server/reconcile/rules.ts); without
+   * this check a closure is dropped. Asked at every apply, so a rule switched off after the check,
+   * or a journal replayed after a restart, never closes a card the rule no longer covers.
+   */
+  mayClose?: (op: Extract<Operation, { kind: "close" }>) => string | undefined;
   /** What each apply of a coordinator's operation came to, for its record. */
   onDelegated?: (op: DelegatedOperation, outcome: Outcome) => void;
 }
@@ -508,8 +514,11 @@ export class SpaceSync {
       const delegated = delegationOf(op);
       const maybeLanded = !read && this.journal.entries.some((entry) => entry.op.op_id === op.op_id && entry.sent);
       const objection = delegated && !maybeLanded ? this.permission(delegated) : undefined;
+      const forbidden = op.kind === "close" ? (this.options.mayClose ? this.options.mayClose(op) : "no rule allows closing here") : undefined;
       const outcome: Outcome =
-        objection !== undefined
+        forbidden !== undefined
+          ? { status: "dropped", reason: forbidden }
+          : objection !== undefined
           ? { status: "refused", reason: objection }
           : op.kind === "project" && op.pin && pass.get(op.pin)?.status !== "applied"
             ? { status: "dropped", reason: "the change it was pinned for did not apply" }

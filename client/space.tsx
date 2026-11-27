@@ -32,6 +32,7 @@ import { EventsSection } from "./events.tsx";
 import { RecapSection } from "./recap.tsx";
 import { PLUGIN_NAME } from "../shared/edition.ts";
 import { RankButtons } from "./rank.tsx";
+import { NeedCards } from "./reconcile.tsx";
 import { AutopilotSection, StartCandidatesSection, StartNextButton } from "./queue.tsx";
 import { ReadyReviewSection } from "./ready-review.tsx";
 import { ManagedQueueSection } from "./managed-queue.tsx";
@@ -476,6 +477,8 @@ const NEEDS_LABEL: Record<NeedsKind, string> = {
   closed: "PR/MR closed",
   merged: "merged, not done",
   accept: "accept or send back",
+  merge: "merge in this order",
+  reconcile: "left to you",
 };
 
 const NEEDS_GLYPH: Record<NeedsKind, Glyph> = {
@@ -491,6 +494,8 @@ const NEEDS_GLYPH: Record<NeedsKind, Glyph> = {
   closed: "review",
   merged: "review",
   accept: "review",
+  merge: "review",
+  reconcile: "needs_you",
 };
 
 function LiveTab({ space, spaces, theme, styles, navigation }: { space: string; spaces: Choices; theme: Theme; styles: Styles; navigation: PluginScreenProps["navigation"] }) {
@@ -528,6 +533,7 @@ function LiveTab({ space, spaces, theme, styles, navigation }: { space: string; 
             spaces={Boolean(spaces)}
             active={Boolean(n.task) && shows(n.task)}
             onOpen={n.task ? () => openTask(n.task, n.title) : undefined}
+            onOpenCard={openTask}
             navigation={navigation}
             theme={theme}
             styles={styles}
@@ -630,11 +636,13 @@ type NeedsItem = NonNullable<RpcOutput<typeof overviewRpc>["needs_you"]>[number]
  * One thing waiting for the person, with what can be done about it in place: open the agent's chat,
  * and for an agent that finished its turn while the task is in progress, answer it right here.
  */
-function NeedsRow({ item, spaces, active, onOpen, navigation, theme, styles }: {
+function NeedsRow({ item, spaces, active, onOpen, onOpenCard, navigation, theme, styles }: {
   item: NeedsItem;
   spaces: boolean;
   active: boolean;
   onOpen?: () => void;
+  /** Opens one of the item's cards: a merge list or a group names several. */
+  onOpenCard?: (task: string, title: string) => void;
   navigation: PluginScreenProps["navigation"];
   theme: Theme;
   styles: Styles;
@@ -680,6 +688,7 @@ function NeedsRow({ item, spaces, active, onOpen, navigation, theme, styles }: {
         {item.kind === "answer" && item.chat_id ? <Button label="Reply" ghost onPress={() => setReplying(!replying)} styles={styles} /> : null}
         {item.chat_id && navigation ? <Button label="Open chat" ghost onPress={() => navigation.openAgent({ agentId: item.chat_id })} styles={styles} /> : null}
       </View>
+      {item.cards?.length ? <NeedCards item={item} onOpen={(task, title) => onOpenCard?.(task, title)} theme={theme} styles={styles} /> : null}
       {replying ? (
         <View style={[styles.row, { gap: 6 }]}>
           <TextInput

@@ -6,7 +6,10 @@ import type { Dashboard } from "./dashboard.ts";
 import type { LoadedEntity, Plan } from "./plan/load.ts";
 import type { GitRunner } from "./sync/git.ts";
 import { localRun } from "./api/view.ts";
-import { resolveTaskForRead } from "./api/resolve.ts";
+import { resolveTaskForRead, type SpaceEntry } from "./api/resolve.ts";
+import { type ApkFact, named, type PrFact } from "./reconcile/facts.ts";
+import { apkText, environmentOf, isApp, variantsOf } from "./reconcile/android.ts";
+import { mergeBlockers } from "./reconcile/merge.ts";
 
 /**
  * The way from merged code to accepted work (03-model.md, Delivery; JOBBY-YV2QS part 5): the PR/MR
@@ -35,6 +38,18 @@ export type DeliveryStage = (typeof DELIVERY_STAGES)[number];
 
 /** Whether the stage build holds the merge commit, as git in the project's checkout tells it. */
 export type StageHolds = "yes" | "no" | "unknown";
+
+/**
+ * An app card's PR/MRs (every one it names) and the builds that cover it (03-model.md, App delivery): the code, the build
+ * for each variant, QA and the publication are four states that stand apart.
+ */
+export interface AppFacts {
+  prs: (Pick<PrFact, "label" | "url" | "state" | "mergedAt"> & { sha: string; blockers: string[] })[];
+  apks: ApkFact[];
+  trunk: string;
+  /** Why not every PR/MR of the card could be read; "" when all were. */
+  unread: string;
+}
 
 export interface DeliveryView {
   stage: DeliveryStage;
@@ -98,8 +113,9 @@ export function deliveryView(input: {
   merge: MergeFact | undefined;
   checks: string | undefined;
   holds: StageHolds;
+  app?: AppFacts;
 }): DeliveryView {
-  const { task, loaded, merge, checks, holds } = input;
+  const { task, loaded, merge, checks, holds, app } = input;
   const d: Partial<Delivery> = task.delivery ?? {};
   const open = loaded.acceptance.filter((a) => !a.done);
   const steps: DeliveryView["steps"] = [];
@@ -108,18 +124,51 @@ export function deliveryView(input: {
   steps.push({ step: "MR", state: merge?.state ?? "none", fact: merge ? `${merge.label} ${merge.state}${merge.sha ? ` (${short(merge.sha)})` : ""}` : "no PR/MR known" });
   steps.push({ step: "CI", state: checks ?? "unknown", fact: checks ? `checks ${checks}` : "not read here (task_result reads it)" });
   const stageFact = d.stage_sha || d.stage_version || d.stage_url;
-  steps.push({
-    step: "Stage",
-    state: !stageFact ? "unknown" : holds === "yes" ? "holds the merge" : holds === "no" ? "older than the merge" : "not compared",
-    fact: stageFact
-      ? `${[d.stage_version && `version ${d.stage_version}`, d.stage_sha && `build ${short(d.stage_sha)}`, d.stage_url].filter(Boolean).join(", ")}${d.stage_checked ? ` (recorded ${d.stage_checked.slice(0, 10)})` : ""}`
-      : "no stage build recorded",
-  });
+  if (app) {
+    // The code, each variant's build, QA and the publication: four facts, none standing for another.
+    steps.splice(
+      0,
+      1,
+      {
+        step: "Code",
+        state: app.unread ? "not all read" : !app.prs.length ? "none" : app.prs.every((pr) => pr.state === "merged") ? "merged" : app.prs.some((pr) => pr.state === "merged") ? "partly merged" : app.prs.every((pr) => pr.blockers.length === 0) ? "ready to merge" : "waiting to merge",
+        fact: [
+          app.prs.map((pr) => `${pr.label} ${pr.state}${pr.sha ? ` (${short(pr.sha)})` : ""}${pr.state === "open" || pr.state === "draft" ? (pr.blockers.length ? `, blocked: ${pr.blockers.join("; ")}` : ", ready to merge") : ""}`).join("; ") || "no PR/MR of the card is known",
+          app.unread ? `not read: ${app.unread}` : "",
+        ]
+          .filter(Boolean)
+          .join("; "),
+      },
+    );
+    for (const apk of app.apks) {
+      steps.push({
+        step: `APK ${apk.variant}`,
+        state: apk.state === "available" ? "available" : apk.state === "awaited" ? "awaited" : "not known",
+        fact: `${environmentOf(task)}: ${apk.why}${apk.build?.url ? ` ${apk.build.url}` : ""}; availability marks no test passed`,
+      });
+    }
+  } else {
+    steps.push({
+      step: "Stage",
+      state: !stageFact ? "unknown" : holds === "yes" ? "holds the merge" : holds === "no" ? "older than the merge" : "not compared",
+      fact: stageFact
+        ? `${[d.stage_version && `version ${d.stage_version}`, d.stage_sha && `build ${short(d.stage_sha)}`, d.stage_url].filter(Boolean).join(", ")}${d.stage_checked ? ` (recorded ${d.stage_checked.slice(0, 10)})` : ""}`
+        : "no stage build recorded",
+    });
+  }
   if (d.flags?.length || d.flags_ready !== undefined) steps.push({ step: "Flags", state: d.flags_ready ? "on" : d.flags_ready === false ? "not on" : "not checked", fact: d.flags?.join(", ") || "flags" });
   if (d.access_ready !== undefined) steps.push({ step: "Access", state: d.access_ready ? "ready" : "missing", fact: d.access_ready ? "QA has access" : "QA has no access yet" });
   if (d.device) steps.push({ step: "Device", state: d.device_ready ? "ready" : "missing", fact: d.device_ready ? d.device : `missing: ${d.device}` });
   if (card) steps.push({ step: "Trello", state: d.trello_state ?? "not checked", fact: `${card}${d.trello_checked ? ` (checked ${d.trello_checked.slice(0, 10)})` : ""}` });
   steps.push({ step: "QA", state: d.qa ?? "pending", fact: `${d.qa === "passed" ? "passed" : d.qa === "failed" ? `failed${d.qa_note ? `: ${d.qa_note}` : ""}` : "not run"}; ${open.length} of ${loaded.acceptance.length} acceptance lines open` });
+  if (app) {
+    steps.push({
+      step: "Google Play",
+      state: d.play ?? "unpublished",
+      fact: `${d.play ? `recorded${d.play_at ? ` ${d.play_at.slice(0, 10)}` : ""}` : "nothing recorded"}; a merge, a build or a QA pass publishes nothing`,
+    });
+  }
+  if (task.auto_closed) steps.push({ step: "Closed", state: "by rule", fact: `${task.auto_closed.at.slice(0, 10)} on ${task.auto_closed.by}: ${task.auto_closed.note}` });
 
   const setupMissing = [
     d.flags_ready === false || (d.flags?.length && d.flags_ready === undefined) ? `flags ${d.flags?.join(", ") || ""}`.trim() : "",
@@ -129,6 +178,8 @@ export function deliveryView(input: {
 
   const decide = (): Pick<DeliveryView, "stage" | "next_by" | "next"> => {
     if (task.status === "done") return { stage: "accepted", next_by: "", next: "nothing: the task is done" };
+    // What could not be read may be an open PR/MR: no stage past the code is said before it is.
+    if (app?.unread) return { stage: merge?.state === "merged" ? "waiting_for_stage" : "in_work", next_by: "owner", next: `not every PR/MR of the card could be read (${app.unread}): fix that, then the builds are compared` };
     if (!merge || (merge.state !== "merged" && merge.state !== "open" && merge.state !== "draft")) {
       return { stage: "in_work", next_by: "agent", next: "the work goes on: no merged PR/MR yet" };
     }
@@ -136,18 +187,33 @@ export function deliveryView(input: {
       if (checks === "pending" || checks === "waiting") return { stage: "waiting_for_ci", next_by: "CI", next: `${merge.label}'s checks run; then review and merge` };
       return { stage: "waiting_for_merge", next_by: "owner", next: `${merge.label} waits for review and merge` };
     }
+    const unmerged = app?.prs.find((pr) => pr.state === "open" || pr.state === "draft");
+    if (unmerged) return { stage: "waiting_for_merge", next_by: "owner", next: `${unmerged.label} of the card is not merged yet${unmerged.blockers.length ? `: ${unmerged.blockers[0]}` : ""}` };
     if (d.qa === "failed") return { stage: "qa_failed", next_by: "agent", next: `QA failed${d.qa_note ? `: ${d.qa_note}` : ""}; send it back with what failed, or start it again for the fix` };
     if (d.qa === "passed") {
       return open.length
         ? { stage: "qa_passed", next_by: "owner", next: `QA passed; ${open.length} acceptance line(s) still open: tick what QA covered, then accept it (mark done)` }
         : { stage: "qa_passed", next_by: "owner", next: "QA passed and every acceptance line is ticked: accept it (mark done)" };
     }
-    if (!stageFact) return { stage: "waiting_for_stage", next_by: "deploy", next: `${merge.label} is merged; no stage build is recorded: deploy to stage and record its build (update_task delivery stage_sha)` };
-    if (holds === "no") return { stage: "waiting_for_stage", next_by: "deploy", next: `stage runs build ${short(d.stage_sha ?? "")}, older than the merge ${short(merge.sha)}: deploy the merge to stage` };
-    if (holds === "unknown" && d.stage_sha && merge.sha) {
+    if (app) {
+      const missing = app.apks.find((apk) => apk.state !== "available");
+      if (missing) {
+        return {
+          stage: "waiting_for_stage",
+          next_by: missing.state === "unknown" ? "owner" : "deploy",
+          next: `${missing.variant} APK for ${missing.environment}: ${missing.why}${missing.state === "awaited" ? `; build it from ${app.trunk || "the target branch"} and record it (update_task delivery builds)` : ""}`,
+        };
+      }
+    } else if (!stageFact) return { stage: "waiting_for_stage", next_by: "deploy", next: `${merge.label} is merged; no stage build is recorded: deploy to stage and record its build (update_task delivery stage_sha)` };
+    if (!app && holds === "no") return { stage: "waiting_for_stage", next_by: "deploy", next: `stage runs build ${short(d.stage_sha ?? "")}, older than the merge ${short(merge.sha)}: deploy the merge to stage` };
+    if (!app && holds === "unknown" && d.stage_sha && merge.sha) {
       return { stage: "waiting_for_stage", next_by: "owner", next: `whether stage build ${short(d.stage_sha)} holds the merge ${short(merge.sha)} is not known here (fetch the project's checkout, or check the deploy)` };
     }
     if (setupMissing.length) return { stage: "waiting_for_setup", next_by: "owner", next: `before QA: ${setupMissing.join("; ")}` };
+    if (app) {
+      const links = app.apks.map((apk) => `${apk.variant} ${apk.build?.url ?? ""}`.trim()).join(", ");
+      return { stage: "ready_for_qa", next_by: "QA", next: `QA installs ${links} and tests it${card ? ` (Trello: ${card})` : ""}; the build being there marks no test passed` };
+    }
     return { stage: "ready_for_qa", next_by: "QA", next: card ? `QA tests on stage; hand the card over with the QA handoff (Trello: ${card})` : "QA tests on stage with the QA handoff" };
   };
   const { stage, next_by, next } = decide();
@@ -155,7 +221,7 @@ export function deliveryView(input: {
   const handoff = [
     `${task.id} «${task.title}»`,
     merge ? `Code: ${merge.url}${merge.sha ? ` (merge ${short(merge.sha)})` : ""}, ${merge.state}.` : "",
-    stageFact ? `Stage: ${[d.stage_url, d.stage_version && `version ${d.stage_version}`, d.stage_sha && `build ${short(d.stage_sha)}`].filter(Boolean).join(", ")}.` : "Stage: not deployed yet.",
+    app ? `Builds: ${apkText(app.apks)}.` : stageFact ? `Stage: ${[d.stage_url, d.stage_version && `version ${d.stage_version}`, d.stage_sha && `build ${short(d.stage_sha)}`].filter(Boolean).join(", ")}.` : "Stage: not deployed yet.",
     d.flags?.length ? `Flags: ${d.flags.join(", ")}${d.flags_ready ? " (on)" : " (to turn on)"}.` : "",
     d.device ? `Device: ${d.device}${d.device_ready ? "" : " (missing)"}.` : "",
     open.length ? `To check:\n${open.map((a) => `- [ ] ${a.text}`).join("\n")}` : "Every acceptance line is ticked.",
@@ -177,18 +243,41 @@ export function deliveryView(input: {
 
 /** Whether a task has delivery to show: recorded facts, a Trello card, or merged work. */
 export function hasDelivery(dashboard: Dashboard, plan: Plan, task: Task): boolean {
-  return Boolean(task.delivery) || Boolean(trelloCard(task)) || dashboard.merged.shown(plan, task).length > 0 || (Boolean(task.run_pr) && (task.status === "review" || task.status === "done"));
+  return Boolean(task.delivery) || Boolean(task.auto_closed) || Boolean(trelloCard(task)) || dashboard.merged.shown(plan, task).length > 0 || (Boolean(task.run_pr) && (task.status === "review" || task.status === "done"));
+}
+
+/** The card's own PR/MRs and builds, read now (waiting at most a little), for an app card. */
+async function appFacts(dashboard: Dashboard, space: SpaceEntry, task: Task): Promise<AppFacts> {
+  const facts = await dashboard.reconciler.factsFor(space, task, 20_000);
+  const environment = environmentOf(task);
+  if (!facts) {
+    const why = "this Mac has not read the card's PR/MRs and builds yet: read again in a minute";
+    return { prs: [], apks: variantsOf(task).map((variant) => ({ variant, environment, state: "unknown" as const, why })), trunk: "", unread: why };
+  }
+  const own = facts.prs.filter((pr) => named(pr) && pr.state !== "closed");
+  const noChecksOk = Boolean(dashboard.reconciler.rule(space, task)?.no_checks_ok);
+  const prs = own.map((pr) => ({
+    label: pr.label,
+    url: pr.url,
+    state: pr.state,
+    mergedAt: pr.mergedAt,
+    sha: pr.mergeSha,
+    blockers: pr.state === "open" || pr.state === "draft" ? mergeBlockers(space.sync.plan, task, facts, pr, new Map(), noChecksOk, (id) => dashboard.reconciler.codeMerged(space, id)) : [],
+  }));
+  return { prs, apks: facts.apks, trunk: facts.trunk, unread: facts.unknown[0] ?? facts.limits[0]?.why ?? "" };
 }
 
 /** The view of one task, reading git for the stage comparison. */
-export async function readDelivery(dashboard: Dashboard, plan: Plan, mapping: Record<string, string | null>, task: Task, loaded: LoadedEntity): Promise<DeliveryView> {
-  const merge = mergeOf(dashboard, plan, task);
+export async function readDelivery(dashboard: Dashboard, plan: Plan, mapping: Record<string, string | null>, task: Task, loaded: LoadedEntity, space?: SpaceEntry): Promise<DeliveryView> {
+  const app = space && isApp(task) ? await appFacts(dashboard, space, task) : undefined;
+  const ours = app?.prs.filter((pr) => pr.state === "merged").sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0] ?? app?.prs[0];
+  const merge = ours ? { label: ours.label, url: ours.url, state: ours.state === "draft" ? "draft" : ours.state, sha: ours.sha } : mergeOf(dashboard, plan, task);
   const run = hasLiveRun(task) ? localRun(dashboard.runs, task) : undefined;
   const checks = run ? dashboard.waits.facts.get(run.run_id)?.checks : undefined;
   const projectId = task.project ? mapping[task.project] : undefined;
   const root = projectId ? dashboard.projectRoots.get(projectId) : undefined;
   const holds = merge?.sha && task.delivery?.stage_sha ? await stageHolds(dashboard.git, root, merge.sha, task.delivery.stage_sha) : "unknown";
-  return deliveryView({ task, loaded, merge, checks, holds });
+  return deliveryView({ task, loaded, merge, checks, holds, ...(app ? { app } : {}) });
 }
 
 /** God Mode's `delivery` read: one task's way to accepted work. */
@@ -199,6 +288,10 @@ export async function taskDelivery(ctx: { dashboard: Dashboard }, input: RpcInpu
   const { found } = resolveTaskForRead([...dashboard.spaces.values()], input.task);
   if (!found.ok) return { ...empty, error: found.error };
   const { entity: task, loaded, space } = found.value;
-  const view = await readDelivery(dashboard, space.sync.plan, space.record.mapping, task, loaded);
-  return { id: task.id, title: task.title, ...view, error: "" };
+  const view = await readDelivery(dashboard, space.sync.plan, space.record.mapping, task, loaded, space);
+  const d = task.delivery;
+  const app = isApp(task)
+    ? { variants: variantsOf(task), environment: environmentOf(task), builds: (d?.builds ?? []).map((b) => ({ variant: b.variant, environment: b.environment, sha: b.sha, url: b.url ?? "", version: b.version ?? "" })), play: d?.play ?? "" }
+    : undefined;
+  return { id: task.id, title: task.title, ...view, ...(app ? { app } : {}), error: "" };
 }

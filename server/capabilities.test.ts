@@ -153,9 +153,9 @@ test("every operation points at a registered RPC with a valid lower-case name", 
   }
 });
 
-test("adding and removing spaces, ChatGPT's own settings, the plan tools' switch and delegation are registered but not described (06-god-mode.md)", () => {
+test("adding and removing spaces, ChatGPT's own settings, the plan tools' switch, delegation and the closing rule are registered but not described (06-god-mode.md)", () => {
   const registered = registeredMethods();
-  for (const name of ["spaces.add", "spaces.create", "spaces.disconnect", "godmode.settings", "godmode.settings.set", "agents.plan_tools", "agents.plan_tools.set", "delegation.read", "delegation.enable", "delegation.agents", "delegation.grant", "delegation.revoke", "delegation.log"]) {
+  for (const name of ["spaces.add", "spaces.create", "spaces.disconnect", "godmode.settings", "godmode.settings.set", "agents.plan_tools", "agents.plan_tools.set", "delegation.read", "delegation.enable", "delegation.agents", "delegation.grant", "delegation.revoke", "delegation.log", "reconcile.rules", "reconcile.rules.set"]) {
     assert.ok(registered.includes(name), `${name} is registered`);
     for (const on of [false, true]) assert.ok(!describeDashboard(on).operations.some((op) => op.method === name), `${name} is not described`);
   }

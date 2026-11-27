@@ -41,6 +41,14 @@ export interface PrTrackerOptions {
   /** Clock difference allowed between the forge and the claiming machine (default ten minutes). */
   marginMs?: number;
   everyMs?: number;
+  /**
+   * The owner's rule for the card's project, when one covers it (server/reconcile): asked before the
+   * merged PR/MR `url` ends run `runId`. It answers the closure to record instead, or why the merge
+   * ends nothing; undefined leaves the run's own rule.
+   */
+  gate?: (sync: SpaceSync, task: string, runId: string, url: string) => Promise<{ op?: Operation; hold?: string } | undefined>;
+  /** Whether an owner's rule covers the task, so a merge note never promises what the rule does not do. */
+  ruled?: (sync: SpaceSync, task: string) => boolean;
   /** Whether this machine's run has its workspace archived; asked only for a merge with lines left. */
   archived?: (run: RunRecord) => Promise<boolean>;
   /**
@@ -160,10 +168,25 @@ export class PrTracker {
     // A merge finishes the run only with nothing pushed to its branch after it (read when it matters).
     const tip = found.some((pr) => pr.state === "merged") && !archived && unticked === 0 ? await this.options.forge.branchTip(root, branch).catch(() => undefined) : undefined;
     if (this.stopped) return;
-    const decision = this.decide(task, found, unticked, archived, tip, Boolean(run?.adopted));
+    const decision = this.decide(task, found, unticked, archived, tip, Boolean(run?.adopted), this.options.ruled?.(space.sync, task.id) ?? false);
     if (decision.view) this.seen.set(task.id, decision.view);
-    if (decision.op) {
-      const { outcomes } = space.sync.record([decision.op]);
+    let op = decision.op;
+    // Under the owner's rule a merged PR/MR ends a run only with everything verified, an archived
+    // workspace included: the run stays, and says what holds it.
+    if (decision.view?.state === "merged" && op?.kind === "transition" && op.to === "done" && this.options.gate) {
+      const gate = await this.options.gate(space.sync, task.id, op.run_id, decision.view.url).catch((error: unknown) => {
+        this.options.log?.(`reconcile of ${task.id}: ${String((error as Error)?.message ?? error)}`);
+        // A rule that cannot be read closes nothing.
+        return { hold: "its reconciliation failed" } as { op?: Operation; hold?: string };
+      });
+      if (this.stopped) return;
+      if (gate) {
+        op = gate.op;
+        if (gate.hold) this.seen.set(task.id, { ...decision.view!, note: `merged; not closed: ${gate.hold}` });
+      }
+    }
+    if (op) {
+      const { outcomes } = space.sync.record([op]);
       await outcomes;
     }
   }
@@ -174,7 +197,7 @@ export class PrTracker {
    * a merged PR/MR may hold only part of the work, unless the run's workspace is `archived`: then
    * nobody is left to do the rest, and the person who archived it ended the run.
    */
-  decide(task: Task, found: ForgePr[], unticked = 0, archived = false, tip?: string, adopted = false): { op?: Operation; view?: PrView } {
+  decide(task: Task, found: ForgePr[], unticked = 0, archived = false, tip?: string, adopted = false, ruled = false): { op?: Operation; view?: PrView } {
     const at = (this.options.now ?? (() => new Date()))().toISOString();
     const transition = (to: "review" | "done", pr: ForgePr, when = at): Operation => ({
       op_id: opaqueId("op"),
@@ -188,7 +211,8 @@ export class PrTracker {
     });
     const view = (pr: ForgePr, note?: string): PrView => ({ run_id: task.run_id!, label: pr.label, state: pr.draft ? "draft" : pr.state, url: pr.url, ...(note ? { note } : {}) });
     const DRAFT = task.status === "review" ? "a draft" : "a draft; the task moves to review when it is marked ready";
-    const UNTICKED = `merged with ${unticked} acceptance line${unticked === 1 ? "" : "s"} not ticked; archive the run's workspace or mark the task done when the work is complete`;
+    // Under an owner's rule an archived workspace stands for no line, and a held task is released, not set done.
+    const UNTICKED = `merged with ${unticked} acceptance line${unticked === 1 ? "" : "s"} not ticked; ${ruled ? "tick them once done, or release the task to done" : "archive the run's workspace or mark the task done when the work is complete"}`;
     // A draft is the agent's work in progress (agents open one at their first push): not review yet.
     const newestReady = found.find((pr) => pr.state === "open" && !pr.draft);
     const newestDraft = found.find((pr) => pr.state === "open" && pr.draft);

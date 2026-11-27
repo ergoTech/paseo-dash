@@ -108,6 +108,18 @@ repository and everyone else's copy stay as they are.
 Every collaborator sees each change after their next sync (a fetch runs in the background;
 **Sync now** in Settings forces one).
 
+### Closing finished work by rule
+
+Settings → Automatic closing, per project and per machine: **Off** (the default), **Report** (Live's
+Needs you lists what is left and why, nothing is closed) or **Close**. Under Close a card goes to
+`done` by itself, once, only when everything is verified: its own merged PR/MR, passing checks (a
+project without CI is allowed explicitly), every acceptance line ticked, nothing pushed after the
+merge, an unchanged scope, and no QA, manual step, open decision, dependency or live run left. The
+card then carries an `auto_closed` record with the facts. A card you reopen is never closed again.
+In such a project a run's own merge ends it only the same way under Close, and never by itself under
+Report: you release the task. The design is in
+`docs/design/task-manager-v1/03-model.md` (Automatic reconciliation, App delivery).
+
 ### Work that only a person can do
 
 Some tasks are not for an agent: signing a contract, a decision only the owner makes. To keep them

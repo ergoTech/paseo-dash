@@ -56,7 +56,7 @@ async function readResult(ctx: WriteContext, asked: string, run: CommandRunner):
   const forge = forgeOf(project.remote);
   try {
     const details = await prDetails(root, project.remote, url, run);
-    const { changes, checks, review, ...pr } = details;
+    const { changes, checks, review, merge: _merge, merged_at: _at, merge_sha: _sha, head_sha: _head, created_at: _created, fork: _fork, verified: _verified, ...pr } = details;
     return { task, forge, result: answer({ pr, changes, checks, review }) };
   } catch (error) {
     return { task, forge, result: answer({ pr: link, error: String((error as Error)?.message ?? error) }) };

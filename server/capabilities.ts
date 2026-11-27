@@ -146,7 +146,7 @@ export const OPERATIONS: OperationSpec[] = [
     contract: overviewRpc,
     title: "What is going on",
     description:
-      "Start here: what waits for the user, what runs, how releases go. needs_you: most urgent first; say each next and follow it. checkout: a trunk checkout ended, not a failure.",
+      "Start here: what waits for the user, what runs, how releases go. needs_you: most urgent first; say each next and follow it. checkout: a trunk checkout ended, not a failure. merge: open PR/MRs in merge order, blockers each; reconcile: cards left open, grouped; cards has links and source.",
     input: overviewInput,
     default: true,
     fields: ["counts", "needs_you", "running", "review", "milestones", "spaces"],
@@ -201,7 +201,7 @@ export const OPERATIONS: OperationSpec[] = [
     kind: "read",
     contract: reconcileRpc,
     title: "Work merged, task still open",
-    description: "Open tasks whose work is merged: MR, commit, branch, acceptance left, next. Read before starting one again. projects: web host fixes.",
+    description: "Open tasks whose work is merged: MR, commit, branch, acceptance left, next. Read before starting one again. verdict: closes or held, diagnosis. projects: web host fixes.",
     input: reconcileInput,
     outcome: READ_OUTCOME,
     untrusted: true,

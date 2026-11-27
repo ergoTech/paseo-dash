@@ -13,7 +13,7 @@ import type {
 } from "../../shared/api.ts";
 import type { tasksArchiveRpc, tasksArchiveWorkspaceRpc, tasksContinueRpc, tasksRankRpc, tasksSeenRpc, uiMoveRpc } from "../../shared/ui.ts";
 import { leftWorkspaces } from "../views.ts";
-import { closed, deliverySchema, type Entity, type EntityType, type Feature, hasLiveRun, lineLocked, type Milestone, refId, type Task, unheld } from "../../shared/model.ts";
+import { closed, DEFAULT_ENVIRONMENT, DEFAULT_VARIANT, deliverySchema, type Entity, type EntityType, type Feature, hasLiveRun, lineLocked, type Milestone, refId, type Task, unheld } from "../../shared/model.ts";
 import { dependencyLoop } from "../plan/dependencies.ts";
 import { briefHash, clarificationEntry, isLastClarification, taskBody } from "../plan/document.ts";
 import { newId, opaqueId } from "../plan/ids.ts";
@@ -649,10 +649,21 @@ function deliveryFor(task: Task, asked: RpcInput<typeof tasksUpdateRpc>["deliver
   if (["stage_sha", "stage_url", "stage_version"].some((k) => (asked as Record<string, unknown>)[k] !== undefined)) next.stage_checked = at;
   if (asked.trello_state !== undefined) next.trello_checked = at;
   if (asked.qa !== undefined) next.qa_at = at;
+  if (asked.play !== undefined) next.play_at = at;
+  if (asked.builds !== undefined) {
+    // A build keeps the time it was first recorded; its variant and environment are as the card says.
+    const before = task.delivery?.builds ?? [];
+    next.builds = asked.builds.map((b) => {
+      const variant = (b.variant || DEFAULT_VARIANT).toLowerCase();
+      const environment = (b.environment || asked.environment || task.delivery?.environment || DEFAULT_ENVIRONMENT).toLowerCase();
+      const kept = before.find((x) => x.sha.toLowerCase() === b.sha.toLowerCase() && x.variant === variant && x.environment === environment && (x.url ?? "") === (b.url ?? ""));
+      return { variant, environment, sha: b.sha, ...(b.url ? { url: b.url } : {}), ...(b.version ? { version: b.version } : {}), at: kept?.at ?? at };
+    });
+  }
   // As the plan reads it back: known fields in their order, nothing empty.
   const normal = deliverySchema.parse(next) ?? {};
   const out = Object.fromEntries(Object.entries(normal).filter(([, v]) => v !== undefined && !(Array.isArray(v) && !v.length)));
-  const facts = Object.keys(out).filter((k) => !["stage_checked", "trello_checked", "qa_at"].includes(k));
+  const facts = Object.keys(out).filter((k) => !["stage_checked", "trello_checked", "qa_at", "play_at"].includes(k));
   return facts.length ? out : null;
 }
 
