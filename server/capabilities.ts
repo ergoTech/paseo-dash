@@ -201,7 +201,7 @@ export const OPERATIONS: OperationSpec[] = [
     kind: "read",
     contract: reconcileRpc,
     title: "Work merged, task still open",
-    description: "Open tasks whose work is merged: MR, commit, branch, acceptance left, next. Read before starting one again. verdict: closes or held, diagnosis. projects: web host fixes.",
+    description: "Open tasks (stopped runs too) with merged work: MR, commit, branch, acceptance left, next. Read before restarting. verdict: closes or held, diagnosis. projects: web host fixes.",
     input: reconcileInput,
     outcome: READ_OUTCOME,
     untrusted: true,

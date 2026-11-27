@@ -151,6 +151,7 @@ export function TaskDetail({
               {t.wait && t.wait.state !== "working" && t.wait.state !== "launching" ? (
                 <Text style={styles.muted}>{`${t.wait.state.replace(/_/g, " ")}${t.wait.note ? `: ${t.wait.note}` : ""}`}</Text>
               ) : null}
+              {t.wait?.next ? <Text style={styles.text}>{`Next: ${t.wait.next}`}</Text> : null}
               <Text style={styles.muted}>{`${t.run.by} on ${t.run.host} since ${t.run.since} · ${t.run.branch}`}</Text>
               {t.run.settings ? <Text style={styles.muted}>{t.run.settings}</Text> : null}
               {t.run.live ? <LiveRun live={t.run.live} styles={styles} theme={theme} /> : null}

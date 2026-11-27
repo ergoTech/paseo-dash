@@ -356,6 +356,9 @@ function BoardCard({ card, column, active, onOpen, onDrop, onDragEnd, act, onArc
         {card.blocked_by ? (
           <Text style={styles.muted} numberOfLines={2}>{`⊘ waits for ${card.blocked_by}`}</Text>
         ) : null}
+        {card.needs === "merged" && card.next ? (
+          <Text style={styles.text} numberOfLines={4}>{`✓ Merged work waits: ${card.next}`}</Text>
+        ) : null}
         {card.unheld ? (
           <Text style={styles.muted} numberOfLines={2}>
             No run holds it: open it to mark it done, put it back to todo, cancel or start it.

@@ -33,6 +33,7 @@ import { type Found, type Match as TaskMatch, namedThings, parseQuery, search } 
 import { historyWithin, localRecord, runProgress, runResult } from "./runs.ts";
 import { claiming, needOf, waitState } from "../needs.ts";
 import { hasDelivery, readDelivery } from "../delivery.ts";
+import { stoppedReading } from "../reconcile/stopped.ts";
 import { decideSet, ownerGate, UNHELD_REASON, waitsText } from "./start-verdict.ts";
 import { startWithoutAsking } from "../godmode-settings.ts";
 import { findPerson, personByEmail, sameLabel } from "../../shared/labels.ts";
@@ -394,7 +395,7 @@ export function getTask(ctx: ReadContext, input: RpcInput<typeof tasksGetRpc>): 
     ...(live ? { state: stateText(ctx, task, host) } : {}),
     progress: progressText(task, loaded.acceptance),
     blocked_by: blockers(plan, task).join("; "),
-    pr: live ? prText(ctx.dashboard.prs.seen.get(task.id), task) : (task.run_pr ?? ""),
+    pr: live ? prText(ctx.dashboard.prs.seen.get(task.id), task) || mergedPrText(ctx, task, host) : (task.run_pr ?? ""),
     chat_id: run?.agentId ?? "",
     project: task.project ?? "",
     feature: titleOf(plan, refId(task.feature)),
@@ -422,6 +423,12 @@ export function getTask(ctx: ReadContext, input: RpcInput<typeof tasksGetRpc>): 
   };
 }
 
+/** "#12 merged": the merged work of a card whose agent is gone and whose run recorded no PR/MR. */
+function mergedPrText(ctx: ReadContext, task: Task, host: string): string {
+  const landed = stoppedReading(ctx.dashboard, task, host)?.landed ?? [];
+  return landed.length ? `${landed.map((pr) => pr.label).join(", ")} merged` : "";
+}
+
 /** A live run's state with its fact: "subagent_working: a sub-agent of it at work". */
 function stateText(ctx: ReadContext, task: Task, host: string): string {
   const { state, note } = waitState(ctx.dashboard, task, host);
@@ -445,8 +452,8 @@ export async function getTaskWithRuns(ctx: ReadContext, input: RpcInput<typeof t
   if (!found.ok) return { ...read, runs_error: found.error };
   const now = clock(ctx);
   const { entity: task, loaded, space } = found.value;
-  if (task.type === "task" && hasDelivery(ctx.dashboard, space.sync.plan, task)) {
-    const view = await readDelivery(ctx.dashboard, space.sync.plan, space.record.mapping, task, loaded, space);
+  if (task.type === "task" && hasDelivery(ctx.dashboard, space.sync.plan, task, ctx.host)) {
+    const view = await readDelivery(ctx.dashboard, space.sync.plan, space.record.mapping, task, loaded, space, ctx.host);
     read.delivery = cut(`${view.stage}; next ${view.next_by || "nobody"}: ${view.next}`, 300);
   }
   const history = await historyWithin(ctx.dashboard, found.value.space.sync, found.value.loaded);

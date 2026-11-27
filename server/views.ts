@@ -19,6 +19,7 @@ import type { Plan } from "./plan/load.ts";
 import { findLabel, personByEmail, shownLabel } from "../shared/labels.ts";
 import { landedText } from "./tracker/landed.ts";
 import { claiming, waitState } from "./needs.ts";
+import { stoppedReading } from "./reconcile/stopped.ts";
 import { issueFacts, readableIssue } from "./tracker/issues.ts";
 import { issueLabel, parseIssueUrl } from "../shared/issues.ts";
 
@@ -119,11 +120,14 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
   if (run?.adopted?.trunk) dashboard.peekLanded(run);
   const landed = run?.adopted?.trunk ? run.adopted.landed : undefined;
   const seen = dashboard.prs.seen.get(task.id);
-  const pr = live ? prText(seen, task) : (task.run_pr ?? "");
+  // An agent gone with work merged from a branch the run never recorded (reconcile/stopped.ts).
+  const gone = stoppedReading(dashboard, task);
+  const goneMerged = gone?.landed ?? [];
+  const pr = live ? prText(seen, task) || (goneMerged.length ? `${goneMerged.map((p) => p.label).join(", ")} merged` : "") : (task.run_pr ?? "");
   // The link must be the PR the text names: a view seen for an earlier run is not this run's.
   // Without a live run the text is run_pr, and so is the link.
   const ownSeen = live && seen && seen.run_id === task.run_id ? seen : undefined;
-  const prUrl = ownSeen ? ownSeen.url : (task.run_pr ?? "");
+  const prUrl = ownSeen ? ownSeen.url : (task.run_pr ?? goneMerged[0]?.url ?? "");
   const issueRef = parseIssueUrl(task.issue);
   const issue = task.issue ? issueFacts(task, dashboard.issues.peek(task, plan), readableIssue(plan, task.issue)) : undefined;
   return {
@@ -185,7 +189,7 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
     clarifications: loaded.clarifications ?? "",
     instructions_hash: hashText(taskInstructions(loaded.brief, loaded.acceptance.map((a) => a.text), loaded.handoff?.text, loaded.clarifications)),
     merged: dashboard.owner ? dashboard.merged.peekTask({ sync: entry.sync, mapping: entry.record.mapping }, task) : [],
-    wait: live ? waitState(dashboard, task) : null,
+    wait: live ? { ...waitState(dashboard, task), ...(gone && (goneMerged.length || gone.pending.length) ? { next: gone.next } : {}) } : null,
     requires: task.requires.map(requirementText),
     readiness: task.readiness_checked ? `${task.readiness_checked.slice(0, 10)}: ${task.readiness_note ?? "checked"}` : "",
     hold: startable(task) ? agentHold(dashboard, plan, task) : "",

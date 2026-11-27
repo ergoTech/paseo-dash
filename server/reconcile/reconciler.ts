@@ -9,13 +9,15 @@ import { type GitRunner, SAFE_BRANCH } from "../sync/git.ts";
 import { closeRevision, type Operation } from "../sync/ops.ts";
 import { prDetails } from "../tracker/details.ts";
 import { type ForgeCli, type ForgePr, prKey, prUrlOfProject } from "../tracker/forge.ts";
-import { idMatches, type MergedPr } from "../tracker/merged.ts";
+import { idMatches, type MergedPr, namedIds } from "../tracker/merged.ts";
 import type { PrView } from "../tracker/prs.ts";
 import { apkStates, buildPool, isApp } from "./android.ts";
-import { type CardFacts, merged, mergedSince, named, type PrFact, type Scope } from "./facts.ts";
+import { type CardFacts, type GoneFacts, type Mention, merged, mergedSince, named, type PrFact, type Scope } from "./facts.ts";
+import { type StageHolds, stageHolds } from "./steps.ts";
+import { agentGone, cardsOwn, ofCard } from "./stopped.ts";
 import { scopeSince } from "./history.ts";
 import { type Rule, ruleOf } from "./rules.ts";
-import { judgeTie, tieIndex, type Way } from "./ties.ts";
+import { judgeTie, type TieIndex, tieIndex, type Way } from "./ties.ts";
 import { type JudgeInput, judge, type Verdict } from "./verdict.ts";
 import type { Item } from "./needs.ts";
 
@@ -28,6 +30,10 @@ import type { Item } from "./needs.ts";
  * follows the facts as they appear. At most MAX_READS cards are asked about at once.
  * It never starts, stops, releases or restarts a run. A live run's card closes only through its own
  * run's merged PR/MR (server/tracker/prs.ts asks `gate`).
+ *
+ * A card whose agent is gone while its run still holds it is read too, in every project, whatever the
+ * rule (stopped.ts): its work may be merged from a branch the run never recorded. That reading only
+ * informs: without a rule nothing closes, and a held card never closes here.
  */
 
 export interface ReconcilerOptions {
@@ -145,6 +151,31 @@ export class Reconciler {
     return Boolean(this.facts.get(key(space, task))?.prs.length);
   }
 
+  /** Whether the card is held by a run whose agent is gone on this Mac (stopped.ts); `host` names this Mac. */
+  stoppedHold(space: SpaceEntry, task: Task, host: string = this.host): boolean {
+    const runs = this.options.runs();
+    if (!runs) return false;
+    // A claim of this Mac still on its way is a start, not a lost agent.
+    const claiming = space.sync.journalEntries.some(({ op }) => op.kind === "claim" && op.run.run_id === task.run_id);
+    return agentGone(task, localRun(runs, task), host, claiming);
+  }
+
+  /** Which stop a held card's agent is in: the run's last change of activity; undefined when it is not gone. */
+  private stopOf(space: SpaceEntry, task: Task, host: string = this.host): string | undefined {
+    if (!this.stoppedHold(space, task, host)) return undefined;
+    return this.options.runs()?.runs.get(task.run_id ?? "")?.activityAt ?? "no record";
+  }
+
+  /**
+   * The last reading made for this stop of the run that holds the card now: a reading of an earlier run,
+   * of a time the agent worked, or of an earlier stop says nothing of this hold.
+   */
+  stoppedFacts(space: SpaceEntry, task: Task, host: string = this.host): CardFacts | undefined {
+    const stop = this.stopOf(space, task, host);
+    const found = this.latest(space, task);
+    return found && stop !== undefined && found.run === task.run_id && found.gone?.stop === stop ? found : undefined;
+  }
+
   /** What a reading depends on besides the forge: another value makes the reading old. */
   private factsKey(space: SpaceEntry, task: Task): string {
     const plan = space.sync.plan;
@@ -162,6 +193,8 @@ export class Reconciler {
       task.created,
       seen?.run_id === task.run_id ? [seen?.url, seen?.state] : "",
       this.options.merged(plan, task).map((pr) => pr.url),
+      // A hold whose agent is gone also reads what the reading of a working run does not.
+      this.stoppedHold(space, task) ? [this.stopOf(space, task), task.delivery?.stage_sha ?? "", this.options.closers(plan, task)] : "",
     ]);
   }
 
@@ -177,7 +210,13 @@ export class Reconciler {
     if (facts.apksKey === wanted) return;
     const projectId = task.project ? space.record.mapping[task.project] : undefined;
     const root = projectId ? this.options.projectRoot(projectId) : undefined;
-    facts.apks = wanted ? await apkStates(this.options.git, root, facts.trunk, task, facts, buildPool(space.sync.plan, task.project!)) : [];
+    const pool = wanted ? buildPool(space.sync.plan, task.project!) : [];
+    facts.apks = wanted ? await apkStates(this.options.git, root, facts.trunk, task, facts, pool) : [];
+    // A hold whose agent is gone counts more of the card's work (stopped.ts), beside the rule's own comparison.
+    if (facts.gone) {
+      const unread = { ...facts, unknown: [...facts.unknown, ...facts.gone.unknown] };
+      facts.gone.apks = wanted ? await apkStates(this.options.git, root, facts.trunk, task, unread, pool, (pr) => ofCard(pr, facts.trunk)) : [];
+    }
     facts.apksKey = wanted;
   }
 
@@ -195,9 +234,10 @@ export class Reconciler {
     return found && found.key === this.factsKey(space, task) ? found : undefined;
   }
 
-  private stale(facts: CardFacts | undefined): boolean {
+  /** `retry`: whether a reading that could not read everything is made again sooner. */
+  private stale(facts: CardFacts | undefined, retry = true): boolean {
     if (!facts) return true;
-    const limit = facts.unknown.length ? Math.min(RETRY_MS, this.options.freshMs ?? FRESH_MS) : (this.options.freshMs ?? FRESH_MS);
+    const limit = retry && facts.unknown.length ? Math.min(RETRY_MS, this.options.freshMs ?? FRESH_MS) : (this.options.freshMs ?? FRESH_MS);
     return this.now().getTime() - Date.parse(facts.at) >= limit;
   }
 
@@ -303,6 +343,20 @@ export class Reconciler {
     return this.current(space, task);
   }
 
+  /**
+   * A card read from the forge now, whatever was read before, waited for at most `waitMs`; false when no
+   * reading came of it in time. One already going on is waited for instead of asking a second after it.
+   */
+  async readNow(space: SpaceEntry, task: Task, waitMs: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), waitMs)));
+    if (!this.reading.has(key(space, task))) this.openLists.clear();
+    // A reading joined may have begun before this stop: then one more is made, within the same wait.
+    const ofThisStop = (facts: CardFacts | undefined) => Boolean(facts) && facts!.gone?.stop === this.stopOf(space, task);
+    const read = this.read(space, task).then((facts) => (ofThisStop(facts) ? true : this.read(space, task).then(ofThisStop)));
+    return Promise.race([read, late]).finally(() => clearTimeout(timer));
+  }
+
   /** Every card of a switched-on project, one at a time: read what is old, close what the rule lets. A call during a pass asks for one more. */
   async pass(): Promise<void> {
     if (this.stopped || this.options.ready?.() === false) return;
@@ -318,7 +372,7 @@ export class Reconciler {
         for (const space of this.options.spaces()) {
           for (const { entity } of [...space.sync.plan.entities.values()]) {
             if (this.stopped) return;
-            if (entity.type !== "task" || !this.rule(space, entity) || !this.evidence(space, entity)) continue;
+            if (entity.type !== "task" || !((this.rule(space, entity) && this.evidence(space, entity)) || this.stoppedHold(space, entity))) continue;
             known.add(key(space, entity));
             await this.reconcile(space, entity.id).catch((error: unknown) => this.options.log?.(`reconcile of ${entity.id}: ${String((error as Error)?.message ?? error)}`));
           }
@@ -355,7 +409,8 @@ export class Reconciler {
     const first = task();
     if (!first) return;
     const known = this.current(space, first);
-    if (!known || this.stale(known)) await this.read(space, first);
+    // Without a rule a held card is only informed: a forge that fails is not asked every minute for it.
+    if (!known || this.stale(known, Boolean(this.rule(space, first)))) await this.read(space, first);
     else await this.cover(space, first, known);
     const held = task();
     // A live run's card is closed by its run's merge only (gate); nothing here takes it from the run.
@@ -421,9 +476,12 @@ export class Reconciler {
     const plan = space.sync.plan;
     const at = this.now().toISOString();
     const factsKey = this.factsKey(space, task);
+    const gone = this.stopOf(space, task);
     const unknown: string[] = [];
     const limits: CardFacts["limits"] = [];
-    const facts = (trunk = "", prs: PrFact[] = []): CardFacts => ({ key: factsKey, at, trunk, prs, unknown, limits, scope: { unknown: "no merged work to compare it with", acted: "" }, apks: [], apksKey: "" });
+    const mentions: Mention[] = [];
+    const run = hasLiveRun(task) ? (task.run_id ?? "") : "";
+    const facts = (trunk = "", prs: PrFact[] = []): CardFacts => ({ key: factsKey, at, trunk, prs, unknown, limits, scope: { unknown: "no merged work to compare it with", acted: "" }, apks: [], apksKey: "", run, mentions });
     const project = task.project ? plan.space?.projects[task.project] : undefined;
     const projectId = task.project ? space.record.mapping[task.project] : undefined;
     const root = projectId ? this.options.projectRoot(projectId) : undefined;
@@ -457,13 +515,25 @@ export class Reconciler {
     for (const url of this.options.closers(plan, task).slice(0, LINKS_READ)) if (own(url)) note(url, "closes_issue");
 
     const branch = task.run_branch ?? plannedBranch(plan, task);
-    if (SAFE_BRANCH.test(branch) && branch !== trunk && branch !== project.trunk) {
-      const listed = await forge.byBranch(root, remote, branch);
+    const ownBranch = SAFE_BRANCH.test(branch) && branch !== trunk && branch !== project.trunk;
+    const askBranch = () => (ownBranch ? forge.byBranch(root, remote, branch) : Promise.resolve(undefined));
+    const askMerged = () => forge.merged(root, remote, { search: task.id, max: HITS });
+    const askOpen = () => Promise.all([this.openOf(root, remote), forge.open(root, remote, { search: task.id, max: HITS })]);
+    // For a hold whose agent is gone the lists are asked together: one after another, a single card
+    // outlasts the read that waits for it. A pass of the rule keeps asking one thing at a time.
+    // One that throws reads as not answered, also while an earlier one is still waited for.
+    const none = () => undefined;
+    const early = gone === undefined ? undefined : { branch: askBranch().catch(none), merged: askMerged().catch(none), open: askOpen().catch(() => [undefined, undefined] as const) };
+    const listed = await (early?.branch ?? askBranch());
+    // A branch's tip is asked of origin once a reading, whoever needs it.
+    const tips = new Map<string, Promise<string | undefined>>();
+    const tipOf = (head: string) => tips.get(head) ?? tips.set(head, forge.branchTip(root, head)).get(head)!;
+    if (ownBranch) {
       if (!listed) unknown.push(`the PR/MRs of branch ${branch} could not be listed`);
       else if (listed.length >= HITS) limits.push({ why: `branch ${branch} has ${HITS} or more PR/MRs, so some may not be read`, advice: "check them yourself" });
       for (const pr of listed ?? []) note(pr.url, "branch");
     }
-    const searched = await forge.merged(root, remote, { search: task.id, max: HITS });
+    const searched = await (early?.merged ?? askMerged());
     if (!searched) unknown.push("the forge did not answer the search for the card's id");
     else if (searched.length >= HITS) limits.push({ why: `${HITS} or more merged PR/MRs name the card, so some may not be read`, advice: "check them yourself" });
     for (const pr of [...(searched ?? []), ...this.options.merged(plan, task).map((m) => ({ url: m.url, title: "", head: m.branch ?? "", body: "", by: m.by }))]) {
@@ -471,17 +541,25 @@ export class Reconciler {
     }
     // A follow-up nobody linked, open, naming the card in its title or branch: part of the work is not in.
     const opened = new Set<string>();
-    const [latestOpen, namedOpen] = await Promise.all([this.openOf(root, remote), forge.open(root, remote, { search: task.id, max: HITS })]);
+    const index = tieIndex(plan);
+    const [latestOpen, namedOpen] = await (early?.open ?? askOpen());
     if (!latestOpen || !namedOpen) unknown.push("the open PR/MRs could not be listed");
     for (const pr of [...(latestOpen ?? []), ...(namedOpen ?? [])]) {
-      for (const way of idMatches(pr, task.id)) {
+      const ways = idMatches(pr, task.id);
+      for (const way of ways) {
         if (way === "id_in_description") continue;
         note(pr.url, way);
         opened.add(pr.url);
       }
+      // Named in the description only: no part of a closing, but a possible follow-up of a held card.
+      // One whose title or branch names another card is that card's; one from the target branch only carries it on.
+      const others = namedIds(`${pr.title ?? ""}\n${pr.head ?? ""}`).some((id) => id !== task.id && index.tasks.has(id));
+      const onwards = pr.head === trunk || pr.head === project.trunk;
+      if (ways.length === 1 && ways[0] === "id_in_description" && !others && !onwards && !mentions.some((m) => m.url === pr.url)) {
+        mentions.push({ url: pr.url, label: pr.label, draft: Boolean(pr.draft), title: pr.title ?? "" });
+      }
     }
 
-    const index = tieIndex(plan);
     const prs: PrFact[] = [];
     // What the card names comes first, so a long list of search hits never crowds it out.
     const strength = ([url, ways]: [string, Set<Way>]) => (ways.has("run") ? 0 : ways.has("link") ? 1 : ways.has("branch") || ways.has("closes_issue") || ways.has("id_in_branch") || opened.has(url) ? 2 : 3);
@@ -539,11 +617,14 @@ export class Reconciler {
     }
     for (const [head, merges] of byHead) {
       const latest = [...merges].sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0]!;
-      const tip = await forge.branchTip(root, head);
+      const tip = await tipOf(head);
       if (tip === undefined) unknown.push(`whether commits were pushed to ${head} after ${latest.label} could not be read`);
       else if (tip && !merges.some((pr) => pr.headSha === tip)) latest.pushedAfter = tip;
     }
     const read = facts(trunk, prs);
+    // A PR/MR tied some other way is among the facts already.
+    read.mentions = mentions.filter((m) => !prs.some((pr) => pr.url === m.url));
+    if (gone !== undefined) read.gone = await this.gatherGone(root, task, read, gone, index, project.trunk, tipOf);
     await this.cover(space, task, read);
     // Last, so the history read is the newest thing a verdict stands on.
     const latest = merged(read)
@@ -553,6 +634,63 @@ export class Reconciler {
       .at(-1);
     if (latest) read.scope = await this.scope(space, task.id, latest);
     return read;
+  }
+
+  /**
+   * What only a hold whose agent is gone asks: whether the branches of the card's merges, or the run's
+   * own, hold commits no merge carries into the target branch, and whether the stage build recorded on
+   * the card holds the merges. It reads the facts and writes none of them (GoneFacts).
+   */
+  private async gatherGone(
+    root: string,
+    task: Task,
+    read: CardFacts,
+    stop: string,
+    index: TieIndex,
+    projectTrunk: string | undefined,
+    tipOf: (head: string) => Promise<string | undefined>,
+  ): Promise<GoneFacts> {
+    const out: GoneFacts = { stop, unknown: [], pushed: [], apks: [] };
+    const trunk = read.trunk;
+    const onwards = (head: string) => head === trunk || head === projectTrunk;
+    // Merges that are the card's work. A mention alone vouches for no branch and holds none: a release
+    // branch listing the card moves on for good.
+    const byHead = new Map<string, PrFact[]>();
+    for (const pr of read.prs) {
+      if (pr.state !== "merged" || !(named(pr) || cardsOwn(pr)) || !mergedSince(pr, task.created) || !pr.headSha) continue;
+      if (!SAFE_BRANCH.test(pr.head) || onwards(pr.head)) continue;
+      if (index.branches.get(`${task.project}\n${pr.head}`)?.some((id) => id !== task.id)) continue;
+      byHead.set(pr.head, [...(byHead.get(pr.head) ?? []), pr]);
+    }
+    for (const [head, merges] of byHead) {
+      const latest = [...merges].sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0]!;
+      const tip = await tipOf(head);
+      if (tip === undefined) out.unknown.push(`whether commits were pushed to ${head} after ${latest.label} could not be read`);
+      else if (tip && !merges.some((pr) => pr.headSha === tip)) out.pushed.push({ label: latest.label, branch: head, tip });
+    }
+    const branch = task.run_branch;
+    if (branch && SAFE_BRANCH.test(branch) && !onwards(branch) && !byHead.has(branch)) {
+      const tip = await tipOf(branch);
+      // Said as it is by an open PR/MR of the card, or carried by a merge into the target branch with that head.
+      const carried = read.prs.some((pr) => pr.head === branch && (((pr.state === "open" || pr.state === "draft") && named(pr)) || (pr.state === "merged" && pr.base === trunk && pr.headSha === tip)));
+      if (tip === undefined) out.unknown.push(`whether ${branch} holds commits outside the PR/MRs could not be read`);
+      // A tip the checkout does not hold, or that git cannot place, counts as not merged.
+      else if (tip && !carried && !(await this.inBranch(root, tip, trunk))) out.ahead = { branch, tip };
+    }
+    const sha = task.delivery?.stage_sha;
+    const merges = read.prs.filter((pr) => ofCard(pr, trunk) && pr.state === "merged" && pr.base === trunk && mergedSince(pr, task.created));
+    if (!sha || !merges.length) return out;
+    const answers: { pr: PrFact; holds: StageHolds }[] = [];
+    for (const pr of merges) answers.push({ pr, holds: await stageHolds(this.options.git, root, pr.mergeSha, sha) });
+    const missing = answers.find((a) => a.holds === "no") ?? answers.find((a) => a.holds === "unknown");
+    out.stage = { sha, holds: missing?.holds ?? "yes", ...(missing ? { missing: { label: missing.pr.label, sha: missing.pr.mergeSha } } : {}) };
+    return out;
+  }
+
+  private async inBranch(root: string, commit: string, trunk: string): Promise<boolean> {
+    if (!trunk) return false;
+    const result = await this.options.git.run(root, ["merge-base", "--is-ancestor", commit, `origin/${trunk}`], 10_000).catch(() => undefined);
+    return Boolean(result && !result.timedOut && result.code === 0);
   }
 
   private async scope(space: SpaceEntry, taskId: string, mergedAt: string): Promise<Scope> {

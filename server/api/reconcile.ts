@@ -1,12 +1,13 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { RECONCILE_LEFT, type reconcileRpc } from "../../shared/api.ts";
 import { hasLiveRun, type Task } from "../../shared/model.ts";
+import { type StoppedReading, stoppedReading } from "../reconcile/stopped.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import { type MergedPr, mergedCandidates } from "../tracker/merged.ts";
 import { webHostProblem } from "../tracker/web-host.ts";
 import type { Dashboard } from "../dashboard.ts";
 import type { Verdict } from "../reconcile/verdict.ts";
-import { cut } from "./view.ts";
+import { cut, localHost } from "./view.ts";
 import type { ReadContext } from "./reads.ts";
 import { resolveSpaces, resolveTaskForRead, type SpaceEntry } from "./resolve.ts";
 
@@ -57,6 +58,25 @@ function row(task: Task, loaded: LoadedEntity, merged: MergedPr[], held?: Verdic
   };
 }
 
+/** A card whose agent is gone with merged work: what is merged, what is left and the one next step. */
+function goneRow(task: Task, loaded: LoadedEntity, gone: StoppedReading, rule: string): Row {
+  const open = loaded.acceptance.filter((a) => !a.done).map((a) => cut(a.text, 200));
+  return {
+    id: task.id,
+    title: task.title,
+    status: task.status,
+    project: task.project ?? "",
+    merged: [...gone.landed, ...gone.related].map((pr) => ({ pr: pr.label, url: pr.url, sha: pr.mergeSha, branch: pr.head, merged_at: pr.mergedAt, by: pr.ways.join(", ") })),
+    left: open.slice(0, RECONCILE_LEFT),
+    left_count: open.length,
+    next: gone.next,
+    verdict: "held",
+    diagnosis: cut(gone.why, 300),
+    sources: gone.sources,
+    rule,
+  };
+}
+
 /** What this Mac's reconciliation knows of a card, as a row; undefined for a project it does not reconcile. */
 function watchedRow(dashboard: Dashboard, space: SpaceEntry, task: Task, loaded: LoadedEntity): Row | undefined {
   const rule = dashboard.reconciler.rule(space, task);
@@ -84,8 +104,11 @@ export function hostProblems(dashboard: Dashboard, spaces: SpaceEntry[]): Reconc
 }
 
 /** Why a task's merged work is not looked for: it has a live run, it is finished, or it has no project. */
-function notFollowed(plan: Plan, task: Task): string {
-  if (hasLiveRun(task)) return `${task.id} has a live run: its own PR/MR is followed by the run (task, task_result).`;
+function notFollowed(plan: Plan, task: Task, host: string): string {
+  if (hasLiveRun(task)) {
+    const where = task.run_host && task.run_host !== host ? ` on ${task.run_host}, whose agent this Mac cannot see` : "";
+    return `${task.id} has a live run${where}: its own PR/MR is followed by the run (task, task_result).`;
+  }
   if (task.status === "done" || task.status === "canceled") return `${task.id} is ${task.status}.`;
   if (task.status === "review") return `${task.id} is in review: its acceptance is the owner's (accept_check).`;
   if (!task.project || !plan.space?.projects[task.project]) return `${task.id} has no project of its space, so no repository to look in.`;
@@ -102,12 +125,22 @@ export async function reconcile(ctx: ReadContext, input: RpcInput<typeof reconci
     const { entity: task, loaded, space } = found.value;
     const plan = space.sync.plan;
     const projects = hostProblems(dashboard, [space]).filter((p) => p.project === task.project);
+    const host = ctx.host ?? localHost();
+    // An agent gone while its run holds the card: the forge is asked now, from any branch.
+    if (dashboard.reconciler.stoppedHold(space, task, host)) {
+      const read = await dashboard.reconciler.readNow(space, task, TASK_WAIT_MS);
+      const gone = stoppedReading(dashboard, task, host);
+      const late = read ? "" : "No new reading of the forge was made in time; this is the last one: read again in a few minutes.";
+      if (!gone) return { tasks: [], projects, note: late || `${task.id}: its agent is gone, and its forge could not be read.`, error: "" };
+      if (gone.landed.length) return { tasks: [goneRow(task, loaded, gone, dashboard.reconciler.rule(space, task)?.mode ?? "")], projects, note: late, error: "" };
+      return { tasks: [], projects, note: [late, `${task.id}: ${gone.why}. Next: ${gone.next}.`].filter(Boolean).join(" "), error: "" };
+    }
     if (dashboard.reconciler.rule(space, task)) {
       await dashboard.reconciler.factsFor(space, task, TASK_WAIT_MS);
       const watched = watchedRow(dashboard, space, task, loaded);
       if (watched) return { tasks: [watched], projects, note: "", error: "" };
     }
-    if (!mergedCandidates(plan, task)) return { tasks: [], projects, note: notFollowed(plan, task), error: "" };
+    if (!mergedCandidates(plan, task)) return { tasks: [], projects, note: notFollowed(plan, task, host), error: "" };
     const mapped = task.project ? space.record.mapping[task.project] : undefined;
     if (!mapped) return { tasks: [], projects, note: `Project ${task.project} is not mapped on this Mac: its forge cannot be asked from here.`, error: "" };
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -135,7 +168,8 @@ export async function reconcile(ctx: ReadContext, input: RpcInput<typeof reconci
     for (const loaded of space.sync.plan.entities.values()) {
       const task = loaded.entity;
       if (task.type !== "task") continue;
-      const watched = watchedRow(dashboard, space, task, loaded);
+      const gone = stoppedReading(dashboard, task, ctx.host ?? localHost());
+      const watched = gone?.landed.length ? goneRow(task, loaded, gone, dashboard.reconciler.rule(space, task)?.mode ?? "") : watchedRow(dashboard, space, task, loaded);
       const merged = dashboard.merged.shown(space.sync.plan, task);
       if (watched?.merged.length || merged.length) {
         total += 1;

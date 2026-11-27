@@ -771,6 +771,37 @@ done). A card the rule closed once and its owner reopened is not closed again, b
 Nothing here starts, stops, releases or restarts a run. A held run keeps what a live run keeps: while
 its agent waits it can occupy one of the autopilot's places until it is released.
 
+#### A hold whose agent is gone
+
+A live run in `in_progress` or `review` whose agent this Mac knows is gone (the run is stopped, or this
+Mac started it and has no record of its agent; not a claim still on its way, not a tracked checkout on
+the trunk) is read from the forge in every project, with no rule switched on. The reading is the
+reconciliation's: PR/MRs of the run, its branch, the card's links, the closer of its issue and the
+card's id, from any branch. It is runtime state, kept for one stop of one run: a new run, or the same
+agent working again, inherits nothing. What only this reading asks is kept apart from the facts an
+automatic closing verifies, and changes none of them. A run of another machine is never read this way: its agent may be at work.
+
+- **Merged** means the card's own PR/MR (issue closer, id in the branch or title, link or run report;
+  never a description mention) merged into the target branch. A title ties it here, with nothing
+  giving it to another card, though not for a closing. Then Needs you says `merged`, and overview,
+  board, task, `reconcile` and `delivery` say the same next step.
+- Every check covers the same merges: the card's own and the **follow-ups** that name it in their
+  description. A PR/MR whose source is the target branch (a release, a promotion) is not counted.
+- **Held back** by anything newer or unread: a PR/MR still open or a draft, an open one naming the card
+  in its description, one closed without a merge (unless a later merge of the same branch replaced it; a
+  linked one stays until its link is taken off), a revert that names the card (until a later merge of the card's own into the target branch
+  brought the work back; the run's own revert with nothing before it is the card's work), a merge into another branch,
+  commits pushed after a merge, commits on the run's branch that no PR/MR holds, a forge that did not
+  answer. The step is that work, also when nothing is merged yet. A closed issue or passing checks
+  alone confirm nothing and pass no QA.
+- **QA's result counts** only when recorded after every one of those merges and, with a stage build or
+  app builds recorded, on a build known to hold them; else the card is tested again.
+- A merge older than the run that the run did not report is earlier work: the step is to check what the
+  run left.
+- Otherwise the step follows the plan and Delivery: an open decision or manual step, QA's result, the
+  stage build or app builds, setup, the open acceptance lines, and last the release to done
+  (`release_task`). Nothing here closes a card, releases or starts a run.
+
 ### Projects' web hosts (runtime, per machine)
 
 A GitLab project's web host is the one its forge names: GitLab's API answers `web_url` for the

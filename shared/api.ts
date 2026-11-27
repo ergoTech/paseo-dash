@@ -1167,7 +1167,7 @@ export const readyReviewRpc = defineRpc({
 // ---------------------------------------------------------------- delivery (JOBBY-YV2QS)
 
 /** The stages of a task's way from code to accepted work (server/delivery.ts). */
-export const DELIVERY_STAGE_NAMES = ["in_work", "waiting_for_merge", "waiting_for_ci", "waiting_for_stage", "waiting_for_setup", "ready_for_qa", "qa_unclear", "qa_failed", "qa_passed", "accepted"] as const;
+export const DELIVERY_STAGE_NAMES = ["in_work", "waiting_for_merge", "waiting_for_ci", "waiting_for_stage", "waiting_for_setup", "ready_for_qa", "qa_unclear", "qa_failed", "qa_passed", "ready_to_accept", "accepted"] as const;
 
 /**
  * A task's way from its PR/MR to accepted work: each step's state and fact, the stage it is at, who

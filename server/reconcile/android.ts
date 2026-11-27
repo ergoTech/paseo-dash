@@ -2,7 +2,7 @@ import { type Build, DEFAULT_ENVIRONMENT, DEFAULT_VARIANT, type Task } from "../
 import { tasksOf } from "../api/view.ts";
 import type { Plan } from "../plan/load.ts";
 import { type GitRunner, SAFE_BRANCH } from "../sync/git.ts";
-import { type ApkFact, type CardFacts, named } from "./facts.ts";
+import { type ApkFact, type CardFacts, named, type PrFact } from "./facts.ts";
 
 /**
  * An app card's way to QA and to Google Play (03-model.md, App delivery). Four states that never
@@ -56,10 +56,19 @@ async function ancestor(git: GitRunner, root: string, commit: string, of: string
  * The state of each variant the card needs, from a reading of its PR/MRs: all it names must be merged
  * and read, or no build covers it, whatever the others hold.
  */
-export async function apkStates(git: GitRunner, root: string | undefined, trunk: string, task: Task, facts: Pick<CardFacts, "prs" | "unknown" | "limits">, pool: Build[]): Promise<ApkFact[]> {
+export async function apkStates(
+  git: GitRunner,
+  root: string | undefined,
+  trunk: string,
+  task: Task,
+  facts: Pick<CardFacts, "prs" | "unknown" | "limits">,
+  pool: Build[],
+  /** Which PR/MRs are the card's work: those it names, and for a hold whose agent is gone more (stopped.ts). */
+  counts: (pr: PrFact) => boolean = named,
+): Promise<ApkFact[]> {
   const environment = environmentOf(task);
-  const merged = facts.prs.filter((pr) => named(pr) && pr.state === "merged");
-  const waiting = facts.prs.filter((pr) => named(pr) && (pr.state === "open" || pr.state === "draft"));
+  const merged = facts.prs.filter((pr) => counts(pr) && pr.state === "merged");
+  const waiting = facts.prs.filter((pr) => counts(pr) && (pr.state === "open" || pr.state === "draft"));
   const unread = facts.unknown[0] ?? facts.limits[0]?.why;
   const out: ApkFact[] = [];
   for (const variant of variantsOf(task)) {
