@@ -233,12 +233,21 @@ export class Reconciler {
     return this.judgeCard(space, task.id, false, "latest");
   }
 
-  /** Whether the card has merged work of its own and no PR/MR it names still open, as last read in full. */
+  /**
+   * Whether the card's code is in the target branch, as last read in full: merged work of its own, every
+   * merged PR/MR it names landed there, and none it names still open.
+   */
   codeMerged(space: SpaceEntry, taskId: string): boolean {
     const task = space.sync.plan.entities.get(taskId)?.entity;
     const facts = task?.type === "task" ? this.latest(space, task) : undefined;
     if (!facts || facts.unknown.length || facts.limits.length) return false;
-    return facts.prs.some((pr) => pr.own && pr.state === "merged") && !facts.prs.some((pr) => named(pr) && (pr.state === "open" || pr.state === "draft"));
+    const created = (task as Task).created;
+    // A merge from before the card existed is a reference, not its work.
+    const work = facts.prs.filter((pr) => named(pr) && (pr.state !== "merged" || mergedSince(pr, created)));
+    return (
+      work.some((pr) => pr.own && pr.state === "merged") &&
+      !work.some((pr) => pr.state === "open" || pr.state === "draft" || (pr.state === "merged" && pr.base !== facts.trunk))
+    );
   }
 
   /** Reads a card now; a read of the same card already going on is shared. */

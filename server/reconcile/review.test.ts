@@ -404,3 +404,17 @@ test("a follow-up whose title names the card, merged into another branch, holds 
     s.stop();
   }
 });
+
+test("a dependency merged outside the target branch is not merged code: the PR/MR waiting for it is not ready", async () => {
+  const s = await reconcileSetup();
+  try {
+    s.github.prs = [merged(41, { base: "develop" }), { n: 50, state: "OPEN", checks: ["SUCCESS"] }];
+    await s.card("TST-AC001", `status: todo\n${links(41)}`, TICKED);
+    await s.card("TST-AC002", `status: todo\n${links(50)}depends_on: ["[[TST-AC001-tst-ac001]]"]\n`, TICKED);
+    await s.pass();
+    const row = readOverview(s.dashboard, {}).needs_you.find((n) => n.kind === "merge")!.cards![0]!;
+    assert.deepEqual([row.ready, row.blockers], [false, ["waits for TST-AC001 (todo, its code is not merged)"]]);
+  } finally {
+    s.stop();
+  }
+});
