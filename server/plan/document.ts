@@ -221,6 +221,57 @@ export function writeAcceptance(body: string, text: string, done: boolean): stri
   return undefined;
 }
 
+/**
+ * Replaces the checkbox lines under `## Acceptance` with these, where the first one stood; a line
+ * whose text stays keeps its tick and the indented lines under it, and other text of the section
+ * stays. Indented lines of a removed line go after the new list. A body without the section gets it
+ * after `## Brief` (else at the end).
+ */
+export function replaceAcceptance(body: string, texts: string[]): string {
+  const ticked = new Set(readAcceptance(body).flatMap((line) => (line.done ? [line.text] : [])));
+  const box = (text: string) => `- [${ticked.has(text) ? "x" : " "}] ${text}`;
+  const lines = body.split("\n");
+  const section = findSection(lines, "Acceptance");
+  if (!section) {
+    const made = texts.map(box);
+    const brief = findSection(lines, "Brief");
+    if (!brief) return [...(body.trim() ? [body.replace(/\n*$/, ""), ""] : []), "## Acceptance", "", ...made, ""].join("\n");
+    const gap = brief.end > 0 && lines[brief.end - 1]!.trim() !== "" ? [""] : [];
+    lines.splice(brief.end, 0, ...gap, "## Acceptance", "", ...made, "");
+    return lines.join("\n");
+  }
+  const kept: string[] = [];
+  /** What a person wrote under a line, by that line's text. */
+  const under = new Map<string, string[]>();
+  let owner: string | undefined;
+  let first = -1;
+  for (const line of lines.slice(section.start + 1, section.end)) {
+    const match = CHECKBOX.exec(line);
+    if (match) {
+      if (first < 0) first = kept.length;
+      owner = match[4]!.trim();
+    } else if (owner !== undefined && /^\s+\S/.test(line)) {
+      under.set(owner, [...(under.get(owner) ?? []), line]);
+    } else {
+      owner = undefined;
+      kept.push(line);
+    }
+  }
+  const made = texts.flatMap((text) => {
+    const own = under.get(text) ?? [];
+    under.delete(text);
+    return [box(text), ...own];
+  });
+  const rest = [...under.values()].flat();
+  if (first >= 0) kept.splice(first, 0, ...made, ...rest);
+  else {
+    const text = kept.join("\n").trim();
+    kept.splice(0, kept.length, "", ...(text ? [...text.split("\n"), ""] : []), ...made, "");
+  }
+  lines.splice(section.start + 1, section.end - section.start - 1, ...kept);
+  return lines.join("\n");
+}
+
 /** What a run's agent left for the next run (`## Handoff`); `run_id` and `at` are empty when a person wrote it. */
 export interface Handoff {
   run_id: string;

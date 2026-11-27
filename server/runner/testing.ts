@@ -20,6 +20,11 @@ export interface FakeAgent {
   pendingPermissions: { title?: string; name?: string; kind?: string; input?: Record<string, unknown> }[];
   lastError: string | null;
   archivedAt: string | null;
+  /** As `agents.list` shows an agent: where it works, its provider and title. */
+  cwd?: string;
+  provider?: string;
+  title?: string;
+  currentModeId?: string;
   /** Gone from the daemon: `refresh()` answers null. */
   gone?: boolean;
 }
@@ -314,7 +319,7 @@ export class FakePaseo {
           const wanted = options.filter?.labels ?? {};
           const entries = [...fake.agents.values()]
             .filter((a) => Object.entries(wanted).every(([k, v]) => a.labels[k] === v))
-            .map((a) => ({ agent: { id: a.id, workspaceId: a.workspaceId, labels: a.labels, archivedAt: a.archivedAt, status: a.status, pendingPermissions: a.pendingPermissions } }));
+            .map((a) => ({ agent: { id: a.id, workspaceId: a.workspaceId, labels: a.labels, archivedAt: a.archivedAt, status: a.status, pendingPermissions: a.pendingPermissions, cwd: a.cwd, provider: a.provider, title: a.title, currentModeId: a.currentModeId } }));
           return { requestId: "r", entries, pageInfo: {} };
         },
         ref: agentHandle,

@@ -45,6 +45,8 @@ import { ReleasePusher, type ReleasePusherOptions, ReleaseStore } from "./lacono
 import { UiPrefsStore } from "./ui-prefs.ts";
 import { checkGodModeFile } from "./godmode-settings.ts";
 import { checkPlanToolsFile, planToolsOn } from "./plan-tools-settings.ts";
+import { DelegationStore } from "./delegation/store.ts";
+import { handleCoordinatorTool } from "./delegation/tools.ts";
 import { handlePlanTool, PlanCallers } from "./agent-tools/plan.ts";
 
 /**
@@ -111,6 +113,7 @@ const PRS_FRESH_MS = 60_000;
 /** A pending operation in a few words, for a refused disconnect. */
 function describeOp(op: Operation): string {
   if (op.kind === "set") return `${op.field} of ${op.id}`;
+  if (op.kind === "delegated") return `a coordinator's change of ${op.id}`;
   if ("id" in op) return `${op.kind} of ${op.id}`;
   if ("key" in op) return `${op.kind} ${op.key}`;
   if ("name" in op) return `${op.kind} ${op.name}`;
@@ -191,6 +194,10 @@ export class Dashboard {
   bridge: AgentToolsBridge | undefined;
   /** The plan tools' tokens of open agent sessions (server/agent-tools/plan.ts). */
   readonly planCallers = new PlanCallers();
+  /** The tokens of coordinators' sessions, apart from the plan tools': one token reaches one set of tools. */
+  readonly coordinatorCallers = new PlanCallers();
+  /** Who may do what by delegation, and what they did (server/delegation/store.ts); the owner's only. */
+  delegation: DelegationStore | undefined;
   /** Paseo workspaces no dashboard task runs in (server/activity.ts). */
   readonly activity = new ActivityReader(
     () => this.paseo,
@@ -463,6 +470,9 @@ export class Dashboard {
     const read = readJsonFile(join(this.dataDir, "spaces.json"), registrySchema, () => ({ version: 1 as const, spaces: [] }));
     this.registry = read.value;
     if (read.movedAside) this.warnings.push(`the list of spaces could not be read and was moved to ${read.movedAside}`);
+    // Before the spaces: their first apply of a coordinator's change asks it for the permission.
+    this.delegation = new DelegationStore(this.dataDir);
+    for (const aside of this.delegation.movedAside) this.warnings.push(`a delegation file could not be read and was moved to ${aside}; check Delegation in Settings`);
     for (const record of this.registry.spaces) {
       try {
         this.openSpace(record);
@@ -516,6 +526,8 @@ export class Dashboard {
       handle: (run, tool, args) => handleTool(this, run, tool, args),
       planByToken: (token) => this.planCallers.find(token),
       handlePlan: (caller, tool, args) => handlePlanTool(this, caller, tool, args, { enabled: () => planToolsOn(this.dataDir) }),
+      coordinatorByToken: (token) => this.coordinatorCallers.find(token),
+      handleCoordinator: (caller, tool, args) => handleCoordinatorTool(this, caller, tool, args),
       log: (message) => console.error(`dashboard: ${message}`),
     });
     try {
@@ -539,6 +551,15 @@ export class Dashboard {
       runner: this.runner,
       timeouts: this.options.timeouts,
       onClaimDecided: (_task, runId, won) => this.starts?.claimDecided(runId, won),
+      authorize: (op) => (this.delegation ? this.delegation.objection(record.key, op) : "delegation is not available"),
+      onDelegated: (op, outcome) => {
+        // A record that cannot be saved never stops the plan's sync.
+        try {
+          this.delegation?.settle(op, outcome);
+        } catch (error) {
+          console.error(`dashboard: delegation record not updated: ${(error as Error)?.message ?? error}`);
+        }
+      },
     });
     this.spaces.set(record.key, { record, sync });
   }
@@ -641,6 +662,11 @@ export class Dashboard {
       }
       this.registry.spaces = this.registry.spaces.filter((r) => r.key !== key);
       this.saveRegistry();
+      try {
+        this.delegation?.forgetSpace(key);
+      } catch (error) {
+        this.warnings.push(`space ${key} was disconnected, but its delegated permissions are removed only until the plugin restarts, since saving failed: ${(error as Error).message}`);
+      }
       // Its Laconote projects are free for another space, and a reconnect starts unmapped.
       try {
         this.releaseStore?.forgetSpace(key);

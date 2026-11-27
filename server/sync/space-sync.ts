@@ -7,7 +7,7 @@ import { loadPlan, type Plan, realPathInside } from "../plan/load.ts";
 import { renderRoadmap, ROADMAP_FILE } from "../plan/roadmap.ts";
 import { classifyPush, COMMIT_CONFIG, git, SAFE_BRANCH, type GitRunner, systemGit } from "./git.ts";
 import { Journal, type JournalEntry } from "./journal.ts";
-import { applyOperation, derivedFeatureStatus, featuresOf, type Operation, type Outcome, type RunFields } from "./ops.ts";
+import { applyOperation, type DelegatedOperation, delegationOf, derivedFeatureStatus, featuresOf, type Operation, type Outcome, type RunFields } from "./ops.ts";
 
 /**
  * One space's plugin-owned clone, kept consistent with the plan repo's remote by re-applying
@@ -41,6 +41,8 @@ export const DEFAULT_TIMEOUTS: SyncTimeouts = {
 
 const LOCAL_MS = 15_000;
 const TRAILER = "Dashboard-Op";
+/** Which coordinator changed which card under which permission, in the plan's own history. */
+const DELEGATED_TRAILER = "Dashboard-Delegated";
 
 export interface Conflict {
   op_id: string;
@@ -70,6 +72,16 @@ export interface SpaceSyncOptions {
   now?: () => Date;
   /** A claim decided by a later fetch (I5): the runner continues or gives up its job. */
   onClaimDecided?: (task: string, runId: string, won: boolean) => void;
+  /**
+   * Why the permission of a coordinator's operation does not stand now (server/delegation/store.ts);
+   * without this check such an operation is refused. Asked whenever refusing would be true: of an
+   * operation no push may have delivered, by every pass; of one a push may have delivered, only by a
+   * pass that read origin and did not find it there. So a refused operation never stays in the local
+   * plan for people to edit on top of, and one that landed is never called refused.
+   */
+  authorize?: (op: DelegatedOperation) => string | undefined;
+  /** What each apply of a coordinator's operation came to, for its record. */
+  onDelegated?: (op: DelegatedOperation, outcome: Outcome) => void;
 }
 
 /** What a write, a sync or a claim hears once the space was disconnected from this machine. */
@@ -479,8 +491,11 @@ export class SpaceSync {
     return entity?.type === "task" ? refId(entity.feature) : undefined;
   }
 
-  /** Applies the pending operations to a clone reset to origin; returns the ids to commit. */
-  private applyPending(previous: Plan | undefined): string[] {
+  /**
+   * Applies the pending operations to a clone reset to origin; returns the ids to commit. `read`:
+   * this pass fetched origin first, so what it applies may be pushed.
+   */
+  private applyPending(previous: Plan | undefined, read: boolean): string[] {
     const now = this.stamp();
     const applied: string[] = [];
     const leave: string[] = [];
@@ -490,10 +505,16 @@ export class SpaceSync {
     for (const op of this.journal.pending()) {
       if ("id" in op && op.kind !== "create") before.set(op.id, this.featureOf(op.id));
       // A pinned color lives and dies with the operation it was pinned for, journaled just before it.
+      const delegated = delegationOf(op);
+      const maybeLanded = !read && this.journal.entries.some((entry) => entry.op.op_id === op.op_id && entry.sent);
+      const objection = delegated && !maybeLanded ? this.permission(delegated) : undefined;
       const outcome: Outcome =
-        op.kind === "project" && op.pin && pass.get(op.pin)?.status !== "applied"
-          ? { status: "dropped", reason: "the change it was pinned for did not apply" }
-          : applyOperation(this.root, this.plan, op, now);
+        objection !== undefined
+          ? { status: "refused", reason: objection }
+          : op.kind === "project" && op.pin && pass.get(op.pin)?.status !== "applied"
+            ? { status: "dropped", reason: "the change it was pinned for did not apply" }
+            : applyOperation(this.root, this.plan, op, now);
+      if (delegated) this.options.onDelegated?.(delegated, outcome);
       pass.set(op.op_id, outcome);
       if (this.awaiting.has(op.op_id)) this.awaiting.set(op.op_id, outcome);
       if (outcome.status === "applied") {
@@ -513,10 +534,21 @@ export class SpaceSync {
     return [...applied, ...derived.map((op) => op.op_id)];
   }
 
+  private permission(op: DelegatedOperation): string | undefined {
+    if (!this.options.authorize) return "no permission to apply a coordinator's change";
+    return this.options.authorize(op);
+  }
+
   private async commit(opIds: string[]): Promise<void> {
     this.writeRoadmap();
     await this.git(["add", "-A"]);
-    const trailers = opIds.map((id) => `${TRAILER}: ${id}`).join("\n");
+    const delegated = this.journal.entries.flatMap(({ op }) => {
+      const found = opIds.includes(op.op_id) ? delegationOf(op) : undefined;
+      if (!found) return [];
+      const { grant, agent } = found.via;
+      return [`${DELEGATED_TRAILER}: ${found.id} agent=${agent} grant=${grant}`.replace(/[\r\n]+/g, " ")];
+    });
+    const trailers = [...opIds.map((id) => `${TRAILER}: ${id}`), ...delegated].join("\n");
     const subject = `dashboard: ${opIds.length} change${opIds.length === 1 ? "" : "s"}`;
     await this.git([...COMMIT_CONFIG, "commit", "--quiet", "-m", subject, "-m", trailers]);
   }
@@ -552,7 +584,7 @@ export class SpaceSync {
       await this.refresh(false);
       this.settleJournal(false);
       await this.dropOverriddenDerived();
-      const opIds = this.applyPending(undefined);
+      const opIds = this.applyPending(undefined, false);
       if (opIds.length) await this.commit(opIds);
     } finally {
       this.state.pending = this.journal.entries.length;
@@ -567,11 +599,16 @@ export class SpaceSync {
         const previous = await this.refresh(fetched);
         this.settleJournal(fetched);
         await this.dropOverriddenDerived();
-        const opIds = this.applyPending(fetched ? previous : undefined);
+        const opIds = this.applyPending(fetched ? previous : undefined, fetched);
         if (!opIds.length) return;
         await this.commit(opIds);
         if (!fetched) return;
+        // Coordinators' operations only; journaled first, so a process that stops during the push still
+        // knows they may have landed.
+        const watched = this.journal.entries.flatMap(({ op }) => (delegationOf(op) && opIds.includes(op.op_id) ? [op.op_id] : []));
+        this.journal.markSent(watched, true);
         const push = classifyPush(await this.push(this.t.pushMs));
+        if (push !== "accepted" && push !== "unknown") this.journal.markSent(watched, false);
         if (push === "accepted") {
           for (const id of opIds) this.seen.add(id);
           this.journal.remove(opIds);

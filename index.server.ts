@@ -39,6 +39,8 @@ import { readGodModeSettings, startWithoutAsking, writeGodModeSettings } from ".
 import { godModeSettingsRpc, godModeSettingsSetRpc } from "./shared/godmode.ts";
 import { readPlanToolsSettings, writePlanToolsSettings } from "./server/plan-tools-settings.ts";
 import { planToolsSettingsRpc, planToolsSettingsSetRpc } from "./shared/plan-tools.ts";
+import { enableDelegation, grantDelegation, listDelegationAgents, readDelegation, readDelegationLog, revokeDelegation } from "./server/delegation/rpc.ts";
+import { delegationAgentsRpc, delegationEnableRpc, delegationGrantRpc, delegationLogRpc, delegationReadRpc, delegationRevokeRpc } from "./shared/delegation.ts";
 import { openPlanTools } from "./server/agent-tools/plan-hook.ts";
 import { listSpaces, syncAnswer } from "./server/spaces/list.ts";
 import { localProjects } from "./server/spaces/local.ts";
@@ -283,6 +285,13 @@ export default function contribute(server: PluginServerContext) {
   // The plan tools' switch (shared/plan-tools.ts), also only on the dashboard's screens.
   server.handle(planToolsSettingsRpc, started(() => readPlanToolsSettings(dashboard)));
   server.handle(planToolsSettingsSetRpc, started((input) => writePlanToolsSettings(dashboard, input)));
+  // Delegated planning (shared/delegation.ts), only on the dashboard's screens: ChatGPT cannot grant it.
+  server.handle(delegationReadRpc, started(() => readDelegation(dashboard)));
+  server.handle(delegationEnableRpc, started((input) => enableDelegation(dashboard, input)));
+  server.handle(delegationAgentsRpc, started((input) => listDelegationAgents(dashboard, input)));
+  server.handle(delegationGrantRpc, started((input) => grantDelegation(dashboard, input)));
+  server.handle(delegationRevokeRpc, started((input) => revokeDelegation(dashboard, input)));
+  server.handle(delegationLogRpc, started((input) => readDelegationLog(dashboard, input)));
 
   // The Laconote import (Inbox tab, Settings), also not described to God Mode: ChatGPT has add_to_inbox.
   server.handle(laconoteSettingsRpc, started(() => laconoteSettings(ctx)));
@@ -457,7 +466,8 @@ export default function contribute(server: PluginServerContext) {
 
   // Lifecycle hooks of this machine's task agents (05-architecture.md, Tracking progress).
   const unhook = dashboard.tracker.register(server);
-  // The plan tools of any agent of a mapped project, while the switch is on (server/agent-tools/plan-hook.ts).
+  // The plan tools of any agent of a mapped project while the switch is on, and a coordinator's tools
+  // (server/agent-tools/plan-hook.ts).
   unhook.push(
     beforeHook(server, "agent.session_open", ({ request }, { paseo }) =>
       openPlanTools(dashboard, request, paseo, { log: (line) => console.error(`dashboard: ${line}`) }),

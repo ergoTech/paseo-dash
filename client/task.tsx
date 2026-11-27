@@ -19,6 +19,7 @@ import { TopBar } from "./topbar.tsx";
 import { ResultSection } from "./result.tsx";
 import { EarlierRuns } from "./runs.tsx";
 import { CodeMapSection } from "./codemap.tsx";
+import { DelegatedChanges } from "./delegation.tsx";
 import type { ScreenLocation } from "./history.ts";
 import { useArrival, useShow } from "./nav.ts";
 import { RankButtons } from "./rank.tsx";
@@ -198,6 +199,7 @@ export function TaskDetail({
               <Markdown>{t.handoff.text}</Markdown>
             </Section>
           ) : null}
+          <DelegatedChanges task={t.id} styles={styles} />
           {t.run?.live ? <CodeMapSection task={t.id} styles={styles} theme={theme} /> : null}
           <EarlierRuns task={t.id} handoffAbove={t.handoff?.run} styles={styles} theme={theme} navigation={navigation} inWorkspace={inWorkspace} />
           {t.dependencies.length ? (

@@ -806,6 +806,51 @@ Task agents get an MCP server named `dashboard` with two tools:
 - Without reports (old agents, providers without MCP, a failed bridge), progress falls back to the
   lifecycle and PR/MR sources. Nothing depends on the agent cooperating.
 
+### Delegated planning (pilot)
+
+The owner of a machine appoints one agent as the coordinator of one project of a space
+(`shared/delegation.ts`, `server/delegation/`). The pilot is off until turned on.
+
+- **Where the rules live.** `delegation.json` in `plugin-data`, never in the plan repository, which
+  anyone with push access can change. Only the dashboard's own RPCs write it (`delegation.*`, not
+  described to God Mode). The plugin reads it at start and holds the rules in memory; a file that
+  later differs from what it wrote pauses every permission until the owner saves one. Taking a
+  permission back counts even when it cannot be saved; giving one is saved only from the revision of
+  the rules the screen showed.
+- **Binding.** A permission names a Paseo agent id, a space, a project and a set of actions
+  (`drafts`, `priority`, `dependencies`). The `agent.session_open` hook adds the MCP server
+  `dashboard_coordinator` only for that agent, only in that project's repository, with a token of its
+  own. The agent id comes from Paseo, not from the agent. Every call reads the permission again.
+- **Tools.** `coordinate_find`, `coordinate_task`, `coordinate_draft`, `coordinate_plan`. Their
+  schemas have no field for a status, label, requirement, delivery fact, space or project. Nothing is
+  preapproved: the agent's permission mode decides each call.
+- **Writes.** A new draft is a `create` operation carrying the permission (`via`); a change of a card
+  is one `delegated` operation. Both go through the journal like any write. At every apply the sync
+  asks whether the permission still stands, with one exception: an operation a push may already have
+  delivered (marked `sent` in the journal until a push says nothing landed) is judged only by a pass
+  that read origin and did not find it there. So a refused change does not stay in the local plan, and
+  one that landed is never recorded as refused. At every apply, on top of whatever origin has, the
+  operation checks the card again: in the project, no live run, not marked as a person's work, draft or todo, the
+  revision it was made from. Brief and acceptance change only on drafts the coordinator created;
+  dependencies are added and removed only between cards of the project, removed from drafts only (a
+  removal could make a todo card ready for the autopilot), and never close a loop. So a revocation, a
+  pause or turning the pilot off drops changes not pushed yet, for good (the operation carries the
+  rules' revision it was asked at), while a push already under way is not stopped; and a start, a mark
+  or a newer edit that reached origin first wins.
+- **Repeats.** The operation id is derived from the permission, the card, the revision and the
+  change. A call repeated after a lost answer finds the first one in the journal or in the record and
+  writes nothing; under the same permission, and while the record is kept, a change a person undid is
+  not made again by the old call.
+- **Record.** `delegation-log.json` keeps who, when, what (cut to 200 characters per value), under
+  which permission, and whether it was written or refused by the permission or the card's rules (the
+  newest 500 changes and 100 refusals; a call without a permission, or with fields the tools do not
+  have, is answered and not kept);
+  Settings and the task screen show it on this machine. The commit that carries the change has a
+  `Dashboard-Delegated: <task> agent=<id> grant=<id>` trailer, which every machine's history keeps.
+- **Limit.** The same as for the run tokens above: this is not a boundary against processes of the
+  same OS user. An agent with an unrestricted shell can call the plugin's RPCs, edit `plugin-data` or
+  push to the plan repository itself. The permission bounds what the coordinator tools do.
+
 ### 3. PR/MR state
 
 - **Primary: Paseo's own forge data.** The workspace descriptor carries `githubRuntime.pullRequest`

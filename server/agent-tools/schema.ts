@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PRIORITIES } from "../../shared/model.ts";
 
 /**
  * The input of `task_report`. The same schema checks a call and renders the tool's `inputSchema` that
@@ -69,5 +70,47 @@ export const draftSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
     note: z.string().trim().max(2000).optional(),
+  })
+  .strict();
+
+/**
+ * The inputs of the coordinator tools (server/delegation/tools.ts), which only an agent with a
+ * delegated permission gets. No field names a space, a project, a status, a label or a requirement:
+ * what a coordinator cannot change it cannot ask for.
+ */
+
+/** Most rows coordinate_find returns; also its default. */
+export const COORDINATE_LIMIT = 50;
+export const DELEGATED_BRIEF_MAX = 8000;
+
+const cardId = z.string().trim().min(1).max(40);
+const revision = z.string().trim().min(1).max(40).describe("The revision coordinate_task showed");
+
+export const coordinateFindSchema = z
+  .object({ query: z.string().trim().min(1).max(200).optional(), limit: z.number().int().min(1).max(COORDINATE_LIMIT).optional() })
+  .strict();
+
+export const coordinateTaskSchema = z.object({ id: cardId }).strict();
+
+export const coordinateDraftSchema = z
+  .object({
+    id: cardId.optional().describe("A draft you created, to edit it; leave out to add a new draft"),
+    revision: revision.optional(),
+    title: z.string().trim().min(1).max(200).optional().describe("For a new draft only"),
+    brief: z.string().trim().min(1).max(DELEGATED_BRIEF_MAX).optional().describe("Replaces the whole brief"),
+    acceptance: z
+      .array(z.string().trim().min(1).max(300).regex(/^[^\r\n\u2028\u2029]*$/, "one line"))
+      .max(30)
+      .optional()
+      .describe("Replaces all acceptance lines"),
+  })
+  .strict();
+
+export const coordinatePlanSchema = z
+  .object({
+    id: cardId,
+    revision,
+    priority: z.enum(PRIORITIES).optional(),
+    depends_on: z.array(cardId).max(30).optional().describe("The whole new list of task IDs this card waits for"),
   })
   .strict();

@@ -28,11 +28,17 @@ export interface BridgeOptions {
   /** The agent a plan-tools token was given to. */
   planByToken?: (token: string) => PlanCaller | undefined;
   handlePlan?: (caller: PlanCaller, tool: string, args: unknown) => Promise<ToolAnswer>;
+  /** The agent a coordinator token was given to. */
+  coordinatorByToken?: (token: string) => PlanCaller | undefined;
+  handleCoordinator?: (caller: PlanCaller, tool: string, args: unknown) => Promise<ToolAnswer>;
   log?: (message: string) => void;
 }
 
 const PLAN_SESSION_UNKNOWN =
   "Paseo Dash does not know this session: the plugin restarted or the plan tools were turned off. They work again once the session reopens.";
+
+const COORDINATOR_SESSION_UNKNOWN =
+  "Paseo Dash does not know this session: the plugin restarted. The coordinator tools work again once the session reopens.";
 
 const MAX_REQUEST = 64 * 1024;
 /** A connection that sends nothing whole is closed; the real script gives up after 15 s anyway. */
@@ -115,6 +121,16 @@ export class AgentToolsBridge {
     };
   }
 
+  /** The coordinator tools' stdio server for one agent session; the agent's permission mode decides each call. */
+  forCoordinator(token: string): McpServerConfig {
+    return {
+      type: "stdio",
+      command: process.execPath,
+      args: [this.scriptPath],
+      env: { ELECTRON_RUN_AS_NODE: "1", DASHBOARD_SOCKET: this.socketPath, DASHBOARD_TOKEN: token, DASHBOARD_TOOLS: "coordinator" },
+    };
+  }
+
   /** One request line per connection, one answer, then the connection is closed. */
   private serve(socket: Socket): void {
     let buffer = "";
@@ -156,6 +172,9 @@ export class AgentToolsBridge {
     if (run) return this.options.handle(run, tool, request.args ?? {});
     const caller = token ? this.options.planByToken?.(token) : undefined;
     if (caller && this.options.handlePlan) return this.options.handlePlan(caller, tool, request.args ?? {});
+    const coordinator = token ? this.options.coordinatorByToken?.(token) : undefined;
+    if (coordinator && this.options.handleCoordinator) return this.options.handleCoordinator(coordinator, tool, request.args ?? {});
+    if (tool.startsWith("coordinate_")) return { ok: false, text: COORDINATOR_SESSION_UNKNOWN };
     if (tool.startsWith("plan_")) return { ok: false, text: PLAN_SESSION_UNKNOWN };
     return { ok: false, text: "This agent is not a Paseo Dash run (unknown token)." };
   }

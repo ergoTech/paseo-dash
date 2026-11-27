@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useChanges } from "./changes.ts";
+import { DelegationSettings } from "./delegation.tsx";
 import { RunSettings } from "./run-settings.tsx";
 import { spacesAddRpc, spacesDisconnectRpc, spacesListRpc, spacesSyncRpc } from "../shared/spaces.ts";
 import { PLAN_TOPIC, plansAvailableRpc, spacesCheckRpc } from "../shared/sharing.ts";
@@ -169,6 +170,7 @@ export function SpacesSettings({ theme, layout }: PluginSurfaceProps) {
       {(data?.spaces.length ?? 0) > 1 ? <SidebarSettings onSaved={refresh} /> : null}
       <LaconoteSettings onSaved={refresh} />
       <PlanToolsSettings />
+      <DelegationSettings />
       <View />
     </ScrollView>
   );
