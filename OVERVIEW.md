@@ -57,6 +57,14 @@ A coordinator cannot start, release or move a task, touch labels, requirements (
 
 What the limit does not cover: it binds the tools this plugin gives. An agent that runs shell commands as your user without asking can reach Paseo, the plugin's files and the plan repository itself. A change of the rules file while the plugin runs pauses every permission, dropping changes not pushed yet, until you save one again; a change made before a restart is not detected.
 
+## Managed queue (pilot)
+
+Settings → "Managed queue (pilot)", off by default, lets one project's ready cards start on this Mac without pressing Start. You set the project, how many starts it may make in 24 hours, and optionally the labels it is narrowed to. Live's "Managed queue" shows, before you turn it on and after, what it would do with each open card and why: which card is next, which wait for another card and enter by themselves once it is done, and every case that waits for you with the step that settles it. Turning it on, pausing and turning it off are your switches, here and in Live.
+
+The queue is the autopilot with your limits on top: it starts one card per check, only while one of this Mac's places is free and no provider usage limit holds, and not more than the starts you allowed. Pausing or turning it off counts at once, also for a start that was only waiting for its turn, and the start asks again on the plan it fetched, so a card that changed meanwhile, a limit or a revocation stops it. A card starts once: another machine that wins the claim starts it, and a card whose run was released is never started again by the queue.
+
+It leaves to you: cards marked as a person's work, waiting on a decision, access, a device or QA, with an open question, whose work looks merged or partly done, that read like another card (a signal, never a duplicate), whose data could not be read, whose instructions you have not seen as they are now (an imported text, a coordinator's draft or a changed scope), and drafts. A proven duplicate (the same issue, or the same title, brief and acceptance) is held while the older card goes first; you cancel it. Text on a card never gives it permission. Readiness checks settle signals only. Nothing here reaches ChatGPT. As with the other switches, this is not a boundary against a process of your own user, which can edit the plugin's files.
+
 ## Laconote
 
 The inbox imports action items from Laconote meetings as drafts, from a pasted Markdown export or, with an API key, from the meeting list. The key is stored only on this machine, in the plugin's data directory with file mode 0600, and is never written to the plan repository. The inbox also imports open issues from GitHub and GitLab, and a task can link to an issue: the agent is asked to reference it in its pull or merge request, so that a merge into the default branch closes it.

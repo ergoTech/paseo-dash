@@ -445,6 +445,25 @@ function review(ctx: ReadContext, facts: SpaceFacts, task: Task, chain: Held, se
   };
 }
 
+/**
+ * The review of these cards of one space from this Mac's readings, in the order given, and the ids
+ * on a dependency cycle or behind one (the managed queue, server/managed/plan.ts). It asks no forge.
+ */
+export function reviewCards(ctx: ReadContext, space: SpaceEntry, tasks: Task[]): { cards: Map<string, Card>; cycles: Set<string> } {
+  const facts = spaceFacts(space);
+  const chains = chainsOf(facts.plan, () => true);
+  const cycles = new Set(chains.cycles);
+  const cards = new Map(
+    tasks.map((task, order) => {
+      const view = ctx.dashboard.merged.readingOf(facts.plan, task);
+      const searched = view !== undefined && ctx.dashboard.merged.wasSearched(view);
+      const { order: _order, ...card } = review(ctx, facts, task, { roots: chains.rootsOf.get(task.id) ?? [], cycle: cycles.has(task.id) }, searched, order);
+      return [task.id, card];
+    }),
+  );
+  return { cards, cycles };
+}
+
 /** A root as listed: what to do about it, by the state it is in. */
 function rootRow(ctx: ReadContext, facts: SpaceFacts, root: Root, card: () => Card): Review["roots"][number] {
   const { task } = root;

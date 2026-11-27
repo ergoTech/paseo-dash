@@ -785,6 +785,12 @@ export interface StartRequest extends StartOptions {
    * No for a start a read-back through ChatGPT covered: the user heard of the text, never saw it.
    */
   recordSeen?: boolean;
+  /**
+   * The caller's own checks, run by the claim on the plan it just fetched, after the start's checks:
+   * why the start must not go on. The managed queue asks here again whether its limits still let it
+   * start and whether the card still is what it planned (server/managed/queue.ts).
+   */
+  guard?: (fresh: Plan) => string | undefined;
 }
 
 const SHOWN_NAMES = { project: "project", branch: "branch", workspace: "workspace", profile: "agent", issue: "issue", human: "person's-work mark" } as const;
@@ -879,7 +885,7 @@ export async function startTask(ctx: WriteContext, input: RpcInput<typeof tasksS
     started: run.run_started,
     tools,
   };
-  const claim = await found.space.sync.claim(task.id, run, (fresh) => startObjection(fresh, task.id, plan.previousRunId, request, plan.checked));
+  const claim = await found.space.sync.claim(task.id, run, (fresh) => startObjection(fresh, task.id, plan.previousRunId, request, plan.checked) ?? request.guard?.(fresh));
   if (claim.result === "won") {
     // The worktree and the agent follow in the background; `task` reads show how far it got.
     ctx.dashboard.starts?.launch(launch);

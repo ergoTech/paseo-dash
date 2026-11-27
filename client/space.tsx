@@ -34,6 +34,7 @@ import { PLUGIN_NAME } from "../shared/edition.ts";
 import { RankButtons } from "./rank.tsx";
 import { AutopilotSection, StartCandidatesSection, StartNextButton } from "./queue.tsx";
 import { ReadyReviewSection } from "./ready-review.tsx";
+import { ManagedQueueSection } from "./managed-queue.tsx";
 import { BoardTab } from "./board.tsx";
 import { SyncControl } from "./sync.tsx";
 import { TopBar } from "./topbar.tsx";
@@ -575,6 +576,7 @@ function LiveTab({ space, spaces, theme, styles, navigation }: { space: string; 
       </View>
       <StartCandidatesSection space={asked} styles={styles} theme={theme} />
       <ReadyReviewSection key={asked ?? ""} space={asked} styles={styles} theme={theme} />
+      <ManagedQueueSection key={asked ?? ""} space={asked} styles={styles} theme={theme} />
       <AutopilotSection styles={styles} theme={theme} />
       <EventsSection space={asked} spaces={Boolean(spaces)} theme={theme} styles={styles} navigation={navigation} />
       <RecapSection space={asked} spaces={Boolean(spaces)} theme={theme} styles={styles} />

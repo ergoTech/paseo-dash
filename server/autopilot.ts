@@ -6,7 +6,9 @@ import { readJsonFile, writeJsonFile } from "./json-file.ts";
 import { planStart } from "./api/reads.ts";
 import { isHumanWorkRefusal, sortTasks, taskSection } from "./api/view.ts";
 import { agentHold, agentHoldOf } from "./api/start-verdict.ts";
-import { startTask, type WriteContext } from "./api/writes.ts";
+import { startTask, type StartRequest, type WriteContext } from "./api/writes.ts";
+import type { Plan } from "./plan/load.ts";
+import type { StartResult } from "./managed/queue.ts";
 import { flat, type RunActivity, runActivity } from "./needs.ts";
 import type { RunRecord } from "./runner/runs.ts";
 import { backoffMs, isRateLimit, readUsage, resetFrom } from "./rate-limit.ts";
@@ -65,6 +67,8 @@ const fileSchema = z.object({
       at: z.string(),
       /** Its failure or release already paused the project (or found it off). */
       settled: z.boolean().optional(),
+      /** Started by a managed queue (server/managed/queue.ts): its failure or release pauses that queue, not a line's flag. */
+      by: z.literal("queue").optional(),
     }),
   ),
   /** A usage limit an agent's turn met: no start until `until` (server/rate-limit.ts). */
@@ -318,7 +322,7 @@ export class Autopilot {
       return this.current;
     }
     if (!this.dashboard.owner || !this.dashboard.paseo) return Promise.resolve();
-    if (!this.file.tasks.length && !this.file.projects.length) return Promise.resolve();
+    if (!this.file.tasks.length && !this.file.projects.length && !this.dashboard.queue?.store.active().length) return Promise.resolve();
     this.current = this.run(ctx).finally(() => {
       this.current = undefined;
       if (!this.again) return;
@@ -420,7 +424,45 @@ export class Autopilot {
       }
       if (passed) this.waits.set(key, people.length === ready.length ? `waits: only a person's work is ready: ${passed}` : `${this.waits.get(key)}; passed over ${passed}`);
     }
-    return false;
+    // The owner's managed queue goes last: a flag a person set comes first.
+    return (await this.dashboard.queue?.pass(ctx, { hold: () => this.startHold(), start: (c, space, task, guard) => this.startQueued(c, space, task, guard) })) ?? false;
+  }
+
+  /** Why no start may be made now, asked again right before a queue's start: a usage limit, or every place at work. */
+  private async startHold(): Promise<string> {
+    const limited = await this.limitHold();
+    if (limited) return limited;
+    const at = this.live().filter((r) => r.holds_place);
+    return at.length >= this.file.max_running ? `waits: ${at.length} runs of this Mac are at work (the autopilot's limit is ${this.file.max_running}): ${at.map((r) => r.task).join(", ")}` : "";
+  }
+
+  /**
+   * A start for the managed queue: what the autopilot checks for any card (an ordinary start would go,
+   * instructions seen as they are), then the claim, with the queue's own checks asked again in it.
+   * Another machine that won the claim is no failure: the card is its run's now.
+   */
+  private async startQueued(ctx: WriteContext, space: string, task: Task, guard: (fresh: Plan) => string | undefined): Promise<StartResult> {
+    // Paseo or git failing before any claim: nothing started, the card is tried again later.
+    const plan = await planStart(ctx, { task: task.id }, { automatic: true }).catch((error: unknown) => ({ error: `its start could not be checked: ${String((error as Error)?.message ?? error)}` }));
+    if (!("found" in plan)) return { ok: false, kind: "skip", reason: plan.error, note: true };
+    const unseen = plan.instructions.filter((part) => part.state !== "unchanged");
+    if (unseen.length) return { ok: false, kind: "skip", reason: `open ${task.id} once: ${unseen.map((p) => p.name).join(", ")} ${unseen.length === 1 ? "is" : "are"} not seen by you as ${unseen.length === 1 ? "it is" : "they are"} now` };
+    // What the guard objected to is no failure of the start: the card or the queue changed since it was planned.
+    let objection = "";
+    const request: StartRequest = { seen: plan.instructions.map((part) => part.hash), automatic: true, guard: (fresh) => (objection = guard(fresh) ?? "") || undefined };
+    const started = await startTask(ctx, { task: task.id }, request).catch((error: unknown) => ({ ok: false as const, unknown: true, error: String((error as Error)?.message ?? error) }));
+    if (!started.ok) {
+      const reason = started.error;
+      if ("unknown" in started) return { ok: false, kind: "unknown", reason };
+      // Lost to another machine, or the plan moved on since the check: nothing failed, the card is not this queue's now.
+      if (objection || /already started by|is blocked by|was started and released elsewhere|was moved to another|instructions changed after the confirmation|is no longer a task/.test(reason) || isHumanWorkRefusal(reason, task.id)) return { ok: false, kind: "skip", reason };
+      return { ok: false, kind: "fail", reason };
+    }
+    const run = this.dashboard.runs?.byTask(task.id);
+    this.file.started = [...this.file.started, { run_id: run?.run_id ?? "", space, task: task.id, title: task.title, project: task.project ?? "", at: new Date().toISOString(), by: "queue" as const }].slice(-KEEP_STARTED);
+    this.save();
+    console.error(`dashboard: managed queue started ${task.id} «${task.title}»`);
+    return { ok: true };
   }
 
   /**
@@ -562,7 +604,9 @@ export class Autopilot {
       }
       entry.settled = true;
       const flag = this.file.projects.find((f) => f.space === entry.space && f.project === entry.project && !f.paused);
-      if (flag) this.pause(entry.space, `p:${flag.space}:${flag.project}`, `paused: ${why}`);
+      // A queue's run is the queue's to answer for: it stops, and a line's flag of the same project stays as it is.
+      if (entry.by === "queue") this.dashboard.queue?.store.pause(entry.space, entry.project, `paused: ${why}`);
+      else if (flag) this.pause(entry.space, `p:${flag.space}:${flag.project}`, `paused: ${why}`);
       else this.save();
     }
   }

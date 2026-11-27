@@ -46,6 +46,7 @@ import { UiPrefsStore } from "./ui-prefs.ts";
 import { checkGodModeFile } from "./godmode-settings.ts";
 import { checkPlanToolsFile, planToolsOn } from "./plan-tools-settings.ts";
 import { DelegationStore } from "./delegation/store.ts";
+import { ManagedQueue } from "./managed/queue.ts";
 import { handleCoordinatorTool } from "./delegation/tools.ts";
 import { handlePlanTool, PlanCallers } from "./agent-tools/plan.ts";
 
@@ -198,6 +199,8 @@ export class Dashboard {
   readonly coordinatorCallers = new PlanCallers();
   /** Who may do what by delegation, and what they did (server/delegation/store.ts); the owner's only. */
   delegation: DelegationStore | undefined;
+  /** This machine's managed queue: the owner's limits and what it started (server/managed/); the owner's only. */
+  queue: ManagedQueue | undefined;
   /** Paseo workspaces no dashboard task runs in (server/activity.ts). */
   readonly activity = new ActivityReader(
     () => this.paseo,
@@ -501,6 +504,8 @@ export class Dashboard {
     // From now on another machine's releases stop this machine's agents; earlier ends are history.
     this.stopsSince();
     this.autopilot = new Autopilot(this, join(this.dataDir, "autopilot.json"));
+    this.queue = new ManagedQueue(this, this.dataDir);
+    for (const aside of this.queue.store.movedAside) this.warnings.push(`a managed queue file could not be read and was moved to ${aside}; check the managed queue in Settings`);
     if (this.runs.movedAside) this.warnings.push(`the list of runs could not be read and was moved to ${this.runs.movedAside}`);
     this.runs.onActivity = (run, previous) => {
       noteActivity(this, run, previous);
@@ -666,6 +671,11 @@ export class Dashboard {
         this.delegation?.forgetSpace(key);
       } catch (error) {
         this.warnings.push(`space ${key} was disconnected, but its delegated permissions are removed only until the plugin restarts, since saving failed: ${(error as Error).message}`);
+      }
+      try {
+        this.queue?.store.forgetSpace(key);
+      } catch (error) {
+        this.warnings.push(`space ${key} was disconnected, but its managed queue is removed only until the plugin restarts, since saving failed: ${(error as Error).message}`);
       }
       // Its Laconote projects are free for another space, and a reconnect starts unmapped.
       try {
