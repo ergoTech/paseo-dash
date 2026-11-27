@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### QA cards after archiving
+
+- `update_task` takes `delivery.trello_cards`: QA cards as someone with Trello access just read them
+  (open or archived, list, who tests next, a stated replacement with where it is said, where the run's
+  result is recorded, or why a card could not be read). Only cards tied to the task are taken. Paseo
+  Dash still reads and moves nothing on Trello.
+- The task's Delivery shows each card with the time it was read, its state and who acts next; a stated
+  replacement is the current QA card and the replaced one stays with its link. An older reading is
+  refused and a failed read keeps the last state, also when a journal is replayed after another
+  machine's change.
+- An archived card with no known replacement and no proof reads `qa_unclear` and is listed in Needs
+  you (`qa`); so is a done task whose card is still open or never read. A reading closes no task,
+  records no QA result and starts no agent; the closing rule holds a card whose QA card is not settled.
+- `meta.describe` grows from 23,108 to 23,633 bytes; its ceiling goes from 23 to 23.5 KiB.
+
 ### Automatic reconciliation of finished work
 
 - Settings → Automatic closing (per project, per machine, off by default): **Report** says what is

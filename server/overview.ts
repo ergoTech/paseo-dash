@@ -8,6 +8,7 @@ import type { SpaceSync } from "./sync/space-sync.ts";
 import { planProblems } from "./plan/load.ts";
 import { unreadCount } from "./events.ts";
 import { flat, needOf, runActivity, SYNC_NEXT, waitState } from "./needs.ts";
+import { cardLabel, qaNeed } from "./qa-cards.ts";
 import { reconcileNeeds } from "./reconcile/needs.ts";
 
 type Overview = RpcOutput<typeof overviewRpc>;
@@ -94,6 +95,13 @@ export function readOverview(dashboard: Dashboard, { space, limit }: RpcInput<ty
       }
       if (task.status !== "in_progress") continue;
       result.running.push({ task: task.id, title: task.title, activity: runActivity(dashboard, task, host), state: waitState(dashboard, task, host).state, host: task.run_host ?? "", chat_id: run?.agentId ?? "", since: task.run_started ?? "" });
+    }
+    for (const task of tasks) {
+      const qa = qaNeed(task);
+      if (!qa) continue;
+      const links = qa.cards.map((run) => ({ label: cardLabel(run.card), url: run.card.url }));
+      const cards = [{ task: task.id, title: task.title, note: flat(qa.why), source: "Trello, as last recorded", links }];
+      need({ task: task.id, title: task.title, why: flat(qa.why), next: qa.next, chat_id: "", kind: "qa", space: key, cards });
     }
     for (const item of reconcileNeeds(dashboard, entry)) need({ ...item, chat_id: "", space: key });
     const review = tasks.filter((t) => t.status === "review");

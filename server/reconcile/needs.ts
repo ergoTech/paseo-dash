@@ -6,6 +6,7 @@ import { sortTasks, tasksOf } from "../api/view.ts";
 import type { Dashboard } from "../dashboard.ts";
 import { type CardFacts, named, type PrFact } from "./facts.ts";
 import { mergeBlockers } from "./merge.ts";
+import { qaNeed } from "../qa-cards.ts";
 import { sourceOf } from "./verdict.ts";
 import type { Hold } from "./types.ts";
 
@@ -47,6 +48,7 @@ const GROUP_WORDS: Record<Hold["code"], string> = {
   acceptance: "merged, acceptance open",
   decision: "an open decision",
   manual: "manual acceptance",
+  qa_card: "QA card not settled",
   qa: "merged, QA open",
   dependencies: "waiting for other cards",
   report: "verified, waiting for you to mark them done",
@@ -85,6 +87,8 @@ export function reconcileNeeds(dashboard: Dashboard, space: SpaceEntry): Shown[]
     const verdict = reconciler.verdict(space, task);
     const hold = verdict ? ownersHold(verdict.holds) : undefined;
     if (!verdict || !hold || (hold.code === "open_pr" && listed.has(task.id))) continue;
+    // A card nothing replaces is its own Needs you item (server/overview.ts): said once.
+    if (hold.code === "qa_card" && qaNeed(task)) continue;
     const id = `${hold.code}|${hold.group ?? hold.next}`;
     const group = groups.get(id) ?? { hold, cards: [] };
     const evidence = [...labels(reconciler.latest(space, task)), hold.source, ...(hold.extra ?? [])];

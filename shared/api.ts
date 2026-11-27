@@ -2,7 +2,7 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { GLYPHS } from "./map.ts";
 import { ISSUE_URL_MAX } from "./issues.ts";
-import { PRIORITIES, REQUIREMENT_KINDS } from "./model.ts";
+import { PRIORITIES, QA_CARD_STATES, REQUIREMENT_KINDS } from "./model.ts";
 
 /**
  * The plan's reads and writes, for the dashboard UI and for God Mode
@@ -535,6 +535,8 @@ export const tasksCreateRpc = defineRpc({
   }),
 });
 
+const trelloCardUrl = z.string().trim().max(500).regex(/^https:\/\/trello\.com\/c\/[A-Za-z0-9]+(?:[/?#]\S*)?$/, "a Trello card URL");
+
 /** What update_task records of a task's way to accepted work (03-model.md, Delivery); "" clears a field. */
 export const deliveryInput = z.object({
   stage_sha: z.string().trim().regex(/^(?:[0-9a-fA-F]{7,64})?$/, "a commit sha").optional(),
@@ -565,6 +567,25 @@ export const deliveryInput = z.object({
     .optional()
     .describe("Replaces the list; a build covers every card whose merge it holds"),
   play: z.enum(["unpublished", "submitted", "published", ""]).optional(),
+  trello_cards: z
+    .array(
+      z.object({
+        url: trelloCardUrl,
+        checked: z.iso.datetime({ offset: true }),
+        state: z.enum(QA_CARD_STATES).optional(),
+        unreadable: z.string().trim().min(1).max(200).optional(),
+        name: z.string().trim().max(200).optional(),
+        list: z.string().trim().max(80).optional(),
+        tester: z.string().trim().max(80).optional(),
+        replaced_by: z.array(trelloCardUrl).max(5).optional(),
+        evidence: z.string().trim().max(300).optional(),
+        proof: z.string().trim().max(300).optional(),
+      }),
+    )
+    .min(1)
+    .max(10)
+    .optional()
+    .describe("QA cards as just read in Trello; checked: ISO time. replaced_by: only stated"),
 });
 
 export const tasksUpdateInput = z.object({
@@ -1146,7 +1167,7 @@ export const readyReviewRpc = defineRpc({
 // ---------------------------------------------------------------- delivery (JOBBY-YV2QS)
 
 /** The stages of a task's way from code to accepted work (server/delivery.ts). */
-export const DELIVERY_STAGE_NAMES = ["in_work", "waiting_for_merge", "waiting_for_ci", "waiting_for_stage", "waiting_for_setup", "ready_for_qa", "qa_failed", "qa_passed", "accepted"] as const;
+export const DELIVERY_STAGE_NAMES = ["in_work", "waiting_for_merge", "waiting_for_ci", "waiting_for_stage", "waiting_for_setup", "ready_for_qa", "qa_unclear", "qa_failed", "qa_passed", "accepted"] as const;
 
 /**
  * A task's way from its PR/MR to accepted work: each step's state and fact, the stage it is at, who
@@ -1166,6 +1187,10 @@ export const tasksDeliveryRpc = defineRpc({
     steps: z.array(z.object({ step: z.string(), state: z.string(), fact: z.string() })),
     trello_blocker: z.string(),
     qa_handoff: z.string(),
+    /** The task's QA cards with what each says is left (server/qa-cards.ts); absent with none recorded. */
+    qa_cards: z
+      .array(z.object({ url: z.string(), label: z.string(), status: z.string(), checked: z.string() }))
+      .optional(),
     /** An app card's recorded builds, variants and Google Play state, for the editor; empty for another card. */
     app: z.object({ variants: z.array(z.string()), environment: z.string(), builds: z.array(z.object({ variant: z.string(), environment: z.string(), sha: z.string(), url: z.string(), version: z.string() })), play: z.string() }).optional(),
     error: z.string(),

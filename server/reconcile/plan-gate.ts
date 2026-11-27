@@ -3,6 +3,7 @@ import { hasLiveRun, type Task } from "../../shared/model.ts";
 import { blockingTasks } from "../api/view.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import { openQuestion } from "../plan/questions.ts";
+import { cardLabel, pendingRuns } from "../qa-cards.ts";
 import { finishWith, type Hold, type Source } from "./types.ts";
 
 /**
@@ -19,7 +20,7 @@ const cut = (text: string, max = 160) => (text.length <= max ? text : `${text.sl
 
 /** QA is part of the way to accepted work: facts recorded under `delivery`, or a Trello card, say someone tests it. */
 export function qaExpected(task: Task): boolean {
-  return task.delivery !== undefined || task.links.some((link) => /^https:\/\/trello\.com\/c\//i.test(link.trim()));
+  return task.delivery !== undefined || task.qa_cards !== undefined || task.links.some((link) => /^https:\/\/trello\.com\/c\//i.test(link.trim()));
 }
 
 /**
@@ -101,7 +102,23 @@ export function planHolds(plan: Plan, task: Task, loaded: Pick<LoadedEntity, "ac
     });
   }
 
-  if (qaExpected(task) && task.delivery?.qa !== "passed") {
+  // A recorded QA card still open, never read or archived with nothing replacing it: its run is not settled.
+  // The cards are the hold of their own when something needs clarifying, or QA reads passed with a card
+  // not settled. Otherwise QA's ordinary hold stands (an app card's says where its builds are), and a
+  // failed QA is always said as such.
+  const runs = pendingRuns(task.qa_cards);
+  const cardsHold = runs.length > 0 && task.delivery?.qa !== "failed" && (task.delivery?.qa === "passed" || runs.some((run) => run.status === "unclear"));
+  if (cardsHold) {
+    const named = runs.map((run) => `${cardLabel(run.card)} (${run.status === "unclear" ? "archived, no known replacement" : run.status === "unread" ? "not read" : "open"})`);
+    hold({
+      // Its own code: QA's hold of an app card is rewritten to say where the builds are, this one is not.
+      code: "qa_card",
+      text: cut(`QA card not settled: ${named.join(", ")}`),
+      next: "record the proof of the run, or the card that replaced it (update_task delivery trello_cards); an archived card passes nothing",
+      by: "owner",
+      source: { label: `${task.id} QA card`, url: runs[0]!.card.url },
+    });
+  } else if (qaExpected(task) && task.delivery?.qa !== "passed") {
     const d = task.delivery;
     const failed = d?.qa === "failed";
     hold({

@@ -42,6 +42,7 @@ import { startWithoutAsking } from "../godmode-settings.ts";
 import { type CreatedBy, startNew } from "../auto-start.ts";
 import { localHost, localRun, PRIORITY_ORDER, priorityRank, spokenTime, tasksOf } from "./view.ts";
 import { rankOps, type RankPosition } from "./rank.ts";
+import { mergeReadings, readingsRefusal, withKnownEvidence } from "../qa-cards.ts";
 
 /**
  * The plan's writes (06-god-mode.md, Actions). Each validates what it names, turns the request into
@@ -525,6 +526,11 @@ export async function updateTask(ctx: WriteContext, input: RpcInput<typeof tasks
     return fail(`«${task.title}» (${task.id}): duplicate_of goes with status canceled, since merging cancels the duplicate. Nothing was changed.`, task);
   }
 
+  // Readings of QA cards are checked whole before anything of the request is recorded.
+  const readings = input.delivery?.trello_cards && withKnownEvidence(task.qa_cards ?? [], input.delivery.trello_cards);
+  const refused = readings ? readingsRefusal(task, readings, now, input.delivery?.trello ? [input.delivery.trello] : []) : "";
+  if (refused) return fail(`«${task.title}» (${task.id}): ${refused}. Nothing was changed.`, task);
+
   const asked = input.agent_profile?.trim();
   let profile: string | null | undefined;
   if (asked !== undefined) {
@@ -576,6 +582,10 @@ export async function updateTask(ctx: WriteContext, input: RpcInput<typeof tasks
   if (input.brief !== undefined && briefText(input.brief).trim() !== loaded.brief.trim()) {
     ops.push({ op_id: opaqueId("op"), kind: "brief", id: task.id, text: briefText(input.brief), expect_hash: briefHash(loaded.brief) });
     fields.push("brief");
+  }
+  if (readings && JSON.stringify(mergeReadings(task.qa_cards ?? [], readings)) !== JSON.stringify(task.qa_cards ?? [])) {
+    ops.push({ op_id: opaqueId("op"), kind: "qa_cards", id: task.id, readings });
+    fields.push("trello_cards");
   }
   // A new priority puts the task at the end of that priority's tasks: its old place meant nothing there.
   // A rank is a place among one priority's tasks of one section; a new priority or status drops it.
@@ -638,9 +648,11 @@ function requirementsFor(task: Task, asked: { kind: Task["requires"][number]["ki
  * the day it was recorded (stage, Trello, QA); null takes it off once nothing is left; undefined leaves it.
  */
 function deliveryFor(task: Task, asked: RpcInput<typeof tasksUpdateRpc>["delivery"], now: Date): unknown {
-  if (!asked || !Object.values(asked).some((v) => v !== undefined)) return undefined;
+  // The QA cards are the task's own field, written by their own operation (server/qa-cards.ts).
+  const { trello_cards: _cards, ...given } = asked ?? {};
+  if (!asked || !Object.values(given).some((v) => v !== undefined)) return undefined;
   const next: Record<string, unknown> = { ...(task.delivery ?? {}) };
-  for (const [key, value] of Object.entries(asked)) {
+  for (const [key, value] of Object.entries(given)) {
     if (value === undefined) continue;
     if (value === "" || (Array.isArray(value) && !value.length)) delete next[key];
     else next[key] = value;

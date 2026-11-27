@@ -24,6 +24,7 @@ export const HOLD_ORDER = [
   "acceptance",
   "decision",
   "manual",
+  "qa_card",
   "qa",
   "dependencies",
   "report",

@@ -477,6 +477,7 @@ const NEEDS_LABEL: Record<NeedsKind, string> = {
   closed: "PR/MR closed",
   merged: "merged, not done",
   accept: "accept or send back",
+  qa: "QA card not settled",
   merge: "merge in this order",
   reconcile: "left to you",
 };
@@ -494,6 +495,7 @@ const NEEDS_GLYPH: Record<NeedsKind, Glyph> = {
   closed: "review",
   merged: "review",
   accept: "review",
+  qa: "needs_you",
   merge: "review",
   reconcile: "needs_you",
 };

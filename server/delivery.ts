@@ -1,7 +1,7 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { tasksDeliveryRpc } from "../shared/api.ts";
 import type { Delivery, Task } from "../shared/model.ts";
-import { hasLiveRun } from "../shared/model.ts";
+import { hasLiveRun, trelloShortLink } from "../shared/model.ts";
 import type { Dashboard } from "./dashboard.ts";
 import type { LoadedEntity, Plan } from "./plan/load.ts";
 import type { GitRunner } from "./sync/git.ts";
@@ -10,6 +10,7 @@ import { resolveTaskForRead, type SpaceEntry } from "./api/resolve.ts";
 import { type ApkFact, named, type PrFact } from "./reconcile/facts.ts";
 import { apkText, environmentOf, isApp, variantsOf } from "./reconcile/android.ts";
 import { mergeBlockers } from "./reconcile/merge.ts";
+import { cardLabel, pendingRuns, type QaRun, type QaRunStatus, qaRuns, readAt } from "./qa-cards.ts";
 
 /**
  * The way from merged code to accepted work (03-model.md, Delivery; JOBBY-YV2QS part 5): the PR/MR
@@ -19,8 +20,10 @@ import { mergeBlockers } from "./reconcile/merge.ts";
  *
  * Facts come from the forge (the PR/MR, its merge commit and checks), git (whether the stage build
  * holds the merge) and what a person or an agent recorded on the task (`delivery`, through
- * update_task). Paseo Dash has no Trello access of its own: the card is linked and its state is the
- * one last recorded, with the day; a QA handoff text is ready to post on the card.
+ * update_task). Paseo Dash has no Trello access of its own: a card's state is the one someone with
+ * that access last read and recorded, with the time (`qa_cards`, 03-model.md); a QA handoff text is
+ * ready to post on the card. A QA card still open, never read or archived with no known replacement
+ * stays in view, also on a task whose code is merged or that is done.
  */
 
 export const DELIVERY_STAGES = [
@@ -30,6 +33,7 @@ export const DELIVERY_STAGES = [
   "waiting_for_stage",
   "waiting_for_setup",
   "ready_for_qa",
+  "qa_unclear",
   "qa_failed",
   "qa_passed",
   "accepted",
@@ -51,6 +55,10 @@ export interface AppFacts {
   unread: string;
 }
 
+/** What this Mac lacks, and what reading Trello by itself would take. */
+const TRELLO_BLOCKER =
+  "Paseo Dash has no Trello access (no Trello connector or API key on this Mac): it cannot read or move a card. A card's state is what someone with Trello access last read and recorded (update_task delivery trello_cards); post the QA handoff on the card the same way. Reading cards by itself would need a read-only Trello API key and token for this plugin, which is not set up.";
+
 export interface DeliveryView {
   stage: DeliveryStage;
   /** Who acts next: agent, CI, deploy, owner, QA. */
@@ -62,11 +70,75 @@ export interface DeliveryView {
   trello_blocker: string;
   /** A text for QA (the Trello card): what to test, where, with what. */
   qa_handoff: string;
+  /** The task's QA cards with what each says is left; absent with none recorded. */
+  qa_cards?: { url: string; label: string; status: QaRunStatus; checked: string }[];
 }
 
 /** The Trello card of the task: delivery's, else a trello.com card among its links. */
 export function trelloCard(task: Task): string {
   return task.delivery?.trello ?? task.links.find((link) => /^https:\/\/trello\.com\/c\//i.test(link.trim()))?.trim() ?? "";
+}
+
+/** One QA card as a step: its state as last read, where it leads and who tests it next. */
+function qaStep({ card, status }: QaRun, all: QaRun[], recorded: Partial<Delivery>, linked: string): DeliveryView["steps"][number] {
+  const label = cardLabel(card);
+  const named = (url: string) => {
+    const other = all.find((run) => trelloShortLink(run.card.url) === trelloShortLink(url));
+    return other ? cardLabel(other.card) : url;
+  };
+  const state = {
+    proven: "run proven",
+    replaced: "archived, replaced",
+    unclear: "archived, needs clarification",
+    open: "open, current QA",
+    unread: "not read",
+  }[status];
+  // A state noted by hand after the card was last read is newer: said beside it, never dropped.
+  const byHand =
+    recorded.trello_state && recorded.trello_checked && trelloShortLink(linked) === trelloShortLink(card.url) && !(Date.parse(recorded.trello_checked) <= Date.parse(card.checked ?? ""))
+      ? `noted by hand ${readAt(recorded.trello_checked)}: ${recorded.trello_state}`
+      : "";
+  return {
+    step: `Trello ${label}${label === trelloShortLink(card.url) ? "" : ` (${trelloShortLink(card.url)})`}`,
+    state,
+    fact: [
+      card.url,
+      card.name ?? "",
+      card.checked ? `${card.state} when read ${readAt(card.checked)}${card.list ? `, list «${card.list}»` : ""}` : "never read",
+      card.failed_at ? `last read failed ${readAt(card.failed_at)}: ${card.failure}` : "",
+      byHand,
+      card.replaced_by?.length ? `replaced by ${card.replaced_by.map(named).join(", ")}${card.evidence ? ` (${card.evidence})` : ""}` : "",
+      card.was_replaced_by?.length ? `before it was reopened, replaced by ${card.was_replaced_by.map(named).join(", ")}` : "",
+      card.proof ? `proof: ${card.proof}` : "",
+      status === "open" ? `next: ${card.tester ?? "QA, nobody named on the card"}` : "",
+      status === "unread" ? "next: someone with Trello access reads it" : "",
+      status === "unclear" ? "next: the owner says what replaced it, or where its run is proven" : "",
+    ]
+      .filter(Boolean)
+      .join("; "),
+  };
+}
+
+/** Who a pending run waits for and what they do, in one line. */
+function runStep(pending: QaRun[]): Pick<DeliveryView, "next_by" | "next"> {
+  const unclear = pending.filter((run) => run.status === "unclear");
+  if (unclear.length) {
+    return {
+      next_by: "owner",
+      next: `Trello ${unclear.map((run) => cardLabel(run.card)).join(", ")} archived with no known replacement: record where its QA went (replaced_by with evidence) or the proof it ran (update_task delivery trello_cards)`,
+    };
+  }
+  const open = pending.filter((run) => run.status === "open");
+  if (open.length) {
+    return {
+      next_by: "QA",
+      next: `the acceptance run is open on Trello ${open.map((run) => `${cardLabel(run.card)} (${run.card.tester ?? "nobody named"}, read ${readAt(run.card.checked!)})`).join(", ")}: record its result, and its proof on the card's reading`,
+    };
+  }
+  return {
+    next_by: "owner",
+    next: `Trello ${pending.map((run) => cardLabel(run.card)).join(", ")} not read yet: someone with Trello access reads it and records it (update_task delivery trello_cards)`,
+  };
 }
 
 interface MergeFact {
@@ -119,7 +191,16 @@ export function deliveryView(input: {
   const d: Partial<Delivery> = task.delivery ?? {};
   const open = loaded.acceptance.filter((a) => !a.done);
   const steps: DeliveryView["steps"] = [];
-  const card = trelloCard(task);
+  const runs = qaRuns(task.qa_cards ?? []);
+  const pending = pendingRuns(task.qa_cards);
+  const unclear = pending.some((run) => run.status === "unclear");
+  const linked = trelloCard(task);
+  const linkedRun = runs.find((run) => trelloShortLink(run.card.url) === trelloShortLink(linked));
+  const openRun = pending.find((run) => run.status === "open");
+  // The card to work on: the linked one, unless it is finished or replaced; then the one still pending.
+  const current = !linked || (linkedRun && linkedRun.status !== "open") ? (openRun ?? pending.find((run) => run.status === "unread")) : linkedRun;
+  const card = current?.card.url ?? (linkedRun ? "" : linked);
+  const tester = current?.card.tester ? `, tester ${current.card.tester}` : "";
 
   steps.push({ step: "MR", state: merge?.state ?? "none", fact: merge ? `${merge.label} ${merge.state}${merge.sha ? ` (${short(merge.sha)})` : ""}` : "no PR/MR known" });
   steps.push({ step: "CI", state: checks ?? "unknown", fact: checks ? `checks ${checks}` : "not read here (task_result reads it)" });
@@ -159,7 +240,8 @@ export function deliveryView(input: {
   if (d.flags?.length || d.flags_ready !== undefined) steps.push({ step: "Flags", state: d.flags_ready ? "on" : d.flags_ready === false ? "not on" : "not checked", fact: d.flags?.join(", ") || "flags" });
   if (d.access_ready !== undefined) steps.push({ step: "Access", state: d.access_ready ? "ready" : "missing", fact: d.access_ready ? "QA has access" : "QA has no access yet" });
   if (d.device) steps.push({ step: "Device", state: d.device_ready ? "ready" : "missing", fact: d.device_ready ? d.device : `missing: ${d.device}` });
-  if (card) steps.push({ step: "Trello", state: d.trello_state ?? "not checked", fact: `${card}${d.trello_checked ? ` (checked ${d.trello_checked.slice(0, 10)})` : ""}` });
+  if (linked && !linkedRun) steps.push({ step: "Trello", state: d.trello_state ?? "not checked", fact: `${linked}${d.trello_checked ? ` (checked ${d.trello_checked.slice(0, 10)})` : ""}` });
+  for (const run of runs) steps.push(qaStep(run, runs, d, linked));
   steps.push({ step: "QA", state: d.qa ?? "pending", fact: `${d.qa === "passed" ? "passed" : d.qa === "failed" ? `failed${d.qa_note ? `: ${d.qa_note}` : ""}` : "not run"}; ${open.length} of ${loaded.acceptance.length} acceptance lines open` });
   if (app) {
     steps.push({
@@ -177,7 +259,13 @@ export function deliveryView(input: {
   ].filter(Boolean);
 
   const decide = (): Pick<DeliveryView, "stage" | "next_by" | "next"> => {
-    if (task.status === "done") return { stage: "accepted", next_by: "", next: "nothing: the task is done" };
+    if (task.status === "done") {
+      if (!pending.length) return { stage: "accepted", next_by: "", next: "nothing: the task is done" };
+      const left = runStep(pending);
+      // A failed QA stays said: an unsettled card does not take its place.
+      if (d.qa === "failed") return { stage: "qa_failed", next_by: "owner", next: `the task is done and QA failed${d.qa_note ? `: ${d.qa_note}` : ""}; ${left.next}` };
+      return { stage: unclear ? "qa_unclear" : "ready_for_qa", next_by: left.next_by, next: `the task is done, its QA is not settled: ${left.next}` };
+    }
     // What could not be read may be an open PR/MR: no stage past the code is said before it is.
     if (app?.unread) return { stage: merge?.state === "merged" ? "waiting_for_stage" : "in_work", next_by: "owner", next: `not every PR/MR of the card could be read (${app.unread}): fix that, then the builds are compared` };
     if (!merge || (merge.state !== "merged" && merge.state !== "open" && merge.state !== "draft")) {
@@ -190,7 +278,10 @@ export function deliveryView(input: {
     const unmerged = app?.prs.find((pr) => pr.state === "open" || pr.state === "draft");
     if (unmerged) return { stage: "waiting_for_merge", next_by: "owner", next: `${unmerged.label} of the card is not merged yet${unmerged.blockers.length ? `: ${unmerged.blockers[0]}` : ""}` };
     if (d.qa === "failed") return { stage: "qa_failed", next_by: "agent", next: `QA failed${d.qa_note ? `: ${d.qa_note}` : ""}; send it back with what failed, or start it again for the fix` };
+    // An archived card nothing replaces holds acceptance back until someone says where its QA went.
+    if (unclear) return { stage: "qa_unclear", ...runStep(pending) };
     if (d.qa === "passed") {
+      if (pending.length) return { stage: "qa_passed", next_by: "owner", next: `QA passed is recorded, but ${runStep(pending).next}` };
       return open.length
         ? { stage: "qa_passed", next_by: "owner", next: `QA passed; ${open.length} acceptance line(s) still open: tick what QA covered, then accept it (mark done)` }
         : { stage: "qa_passed", next_by: "owner", next: "QA passed and every acceptance line is ticked: accept it (mark done)" };
@@ -210,11 +301,13 @@ export function deliveryView(input: {
       return { stage: "waiting_for_stage", next_by: "owner", next: `whether stage build ${short(d.stage_sha)} holds the merge ${short(merge.sha)} is not known here (fetch the project's checkout, or check the deploy)` };
     }
     if (setupMissing.length) return { stage: "waiting_for_setup", next_by: "owner", next: `before QA: ${setupMissing.join("; ")}` };
+    // A card named but never read: its state, and who tests it, are not known yet.
+    if (pending.length && !openRun) return { stage: "ready_for_qa", ...runStep(pending) };
     if (app) {
       const links = app.apks.map((apk) => `${apk.variant} ${apk.build?.url ?? ""}`.trim()).join(", ");
-      return { stage: "ready_for_qa", next_by: "QA", next: `QA installs ${links} and tests it${card ? ` (Trello: ${card})` : ""}; the build being there marks no test passed` };
+      return { stage: "ready_for_qa", next_by: "QA", next: `QA installs ${links} and tests it${card ? ` (Trello: ${card}${tester})` : ""}; the build being there marks no test passed` };
     }
-    return { stage: "ready_for_qa", next_by: "QA", next: card ? `QA tests on stage; hand the card over with the QA handoff (Trello: ${card})` : "QA tests on stage with the QA handoff" };
+    return { stage: "ready_for_qa", next_by: "QA", next: card ? `QA tests on stage; hand the card over with the QA handoff (Trello: ${card}${tester})` : "QA tests on stage with the QA handoff" };
   };
   const { stage, next_by, next } = decide();
 
@@ -234,16 +327,15 @@ export function deliveryView(input: {
     next_by,
     next,
     steps,
-    trello_blocker: card
-      ? "Paseo Dash has no Trello access (no Trello connector or API key on this Mac): it cannot read or move the card. Its state is the one last recorded; post the QA handoff on the card yourself or through an assistant with Trello access, then record its state (update_task delivery trello_state)."
-      : "",
+    trello_blocker: linked || runs.length ? TRELLO_BLOCKER : "",
     qa_handoff: handoff,
+    ...(runs.length ? { qa_cards: runs.map((run) => ({ url: run.card.url, label: cardLabel(run.card), status: run.status, checked: run.card.checked ?? "" })) } : {}),
   };
 }
 
 /** Whether a task has delivery to show: recorded facts, a Trello card, or merged work. */
 export function hasDelivery(dashboard: Dashboard, plan: Plan, task: Task): boolean {
-  return Boolean(task.delivery) || Boolean(task.auto_closed) || Boolean(trelloCard(task)) || dashboard.merged.shown(plan, task).length > 0 || (Boolean(task.run_pr) && (task.status === "review" || task.status === "done"));
+  return Boolean(task.delivery) || Boolean(task.qa_cards) || Boolean(task.auto_closed) || Boolean(trelloCard(task)) || dashboard.merged.shown(plan, task).length > 0 || (Boolean(task.run_pr) && (task.status === "review" || task.status === "done"));
 }
 
 /** The card's own PR/MRs and builds, read now (waiting at most a little), for an app card. */

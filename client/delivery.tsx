@@ -1,13 +1,13 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import type { RpcOutput } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Modal } from "@getpaseo/plugin/client/ui";
+import { ExternalLink, Modal } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Text, View } from "react-native";
 import { tasksDeliveryRpc, tasksUpdateRpc } from "../shared/api.ts";
 import { Actions } from "./actions.tsx";
-import { Button, REFRESH_MS, Section, type Styles, Toggle } from "./common.tsx";
+import { Button, isWebUrl, REFRESH_MS, Section, type Styles, Toggle } from "./common.tsx";
 import { Choice, Field, useRefresh } from "./forms.tsx";
 
 type Theme = PluginHostProps["theme"];
@@ -16,7 +16,7 @@ type Theme = PluginHostProps["theme"];
  * The task screen's Delivery (JOBBY-YV2QS part 5): its PR/MR and merge commit, checks, stage build,
  * flags, access, device, Trello card and QA's result, with the stage it is at and who acts next.
  * Merged code reads apart from accepted work. The facts a person records go through update_task's
- * `delivery`; Paseo Dash has no Trello access, so the card's state is the one recorded.
+ * `delivery`; Paseo Dash has no Trello access, so a card's state is the one recorded, with its time.
  */
 export function DeliverySection({ task, styles, theme }: { task: string; styles: Styles; theme: Theme }) {
   const read = useRpc(tasksDeliveryRpc);
@@ -31,6 +31,18 @@ export function DeliverySection({ task, styles, theme }: { task: string; styles:
       {d.steps.map((s) => (
         <Text key={s.step} style={styles.muted}>{`${s.step}: ${s.state} · ${s.fact}`}</Text>
       ))}
+      {d.qa_cards?.length ? (
+        <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
+          <Text style={styles.muted}>QA cards</Text>
+          {d.qa_cards.map((card) =>
+            isWebUrl(card.url) ? (
+              <ExternalLink key={card.url} href={card.url}>
+                <Text style={[styles.text, { color: theme.colors.accent }]}>{`${card.label} · ${card.status}`}</Text>
+              </ExternalLink>
+            ) : null,
+          )}
+        </View>
+      ) : null}
       {d.trello_blocker ? <Text style={[styles.muted, { color: theme.colors.statusWarning }]}>{d.trello_blocker}</Text> : null}
       {d.qa_handoff ? (
         <View style={styles.card}>
@@ -89,7 +101,17 @@ function DeliveryEditor({ task, app, onClose, styles, theme }: { task: string; a
   const [builds, setBuilds] = useState(recorded);
   const parsed = parseBuilds(builds, app?.environment);
   const [play, setPlay] = useState<"" | "unpublished" | "submitted" | "published">("");
+  // One QA card as the person just saw it on Trello: its reading carries the time of saving.
+  const [card, setCard] = useState("");
+  const [cardState, setCardState] = useState<"" | "open" | "archived">("");
+  const [cardList, setCardList] = useState("");
+  const [tester, setTester] = useState("");
+  const [replacedBy, setReplacedBy] = useState("");
+  const [evidence, setEvidence] = useState("");
+  const [proof, setProof] = useState("");
   const keep = (text: string) => (text.trim() ? text.trim() : undefined);
+  const replacements = replacedBy.split(/[\s,]+/).filter(Boolean);
+  const unfinished = Boolean(card.trim()) !== Boolean(cardState) || (!card.trim() && Boolean(cardList.trim() || tester.trim() || replacements.length || evidence.trim() || proof.trim()));
   const saving = useMutation({
     mutationFn: () =>
       update({
@@ -110,6 +132,21 @@ function DeliveryEditor({ task, app, onClose, styles, theme }: { task: string; a
           variants: variants.trim() === (app?.variants.join(", ") ?? "") ? undefined : variants.split(",").map((v) => v.trim().toLowerCase()).filter(Boolean),
           builds: builds === recorded ? undefined : parsed.builds,
           play: play || undefined,
+          trello_cards:
+            card.trim() && cardState
+              ? [
+                  {
+                    url: card.trim(),
+                    checked: new Date().toISOString(),
+                    state: cardState,
+                    list: keep(cardList),
+                    tester: keep(tester),
+                    replaced_by: replacements.length ? replacements : undefined,
+                    evidence: keep(evidence),
+                    proof: keep(proof),
+                  },
+                ]
+              : undefined,
         },
       }),
     onSuccess: (answer) => {
@@ -145,6 +182,25 @@ function DeliveryEditor({ task, app, onClose, styles, theme }: { task: string; a
           styles={styles}
         />
         <Field label="QA note" value={qaNote} onChange={setQaNote} styles={styles} theme={theme} multiline />
+        <Text style={styles.muted}>A QA card as you see it on Trello now. It records no QA result, and moves nothing.</Text>
+        <Field label="QA card URL" value={card} onChange={setCard} styles={styles} theme={theme} placeholder="https://trello.com/c/…" />
+        <Choice
+          label="The card is"
+          options={[
+            { value: "open", label: "Open" },
+            { value: "archived", label: "Archived" },
+          ]}
+          value={cardState}
+          onChange={setCardState}
+          none="Not recorded"
+          styles={styles}
+        />
+        <Field label="Its list" value={cardList} onChange={setCardList} styles={styles} theme={theme} />
+        <Field label="Who tests it next" value={tester} onChange={setTester} styles={styles} theme={theme} />
+        <Field label="Replaced by (card URLs, only if someone said so)" value={replacedBy} onChange={setReplacedBy} styles={styles} theme={theme} placeholder="https://trello.com/c/…" />
+        <Field label="Where the replacement is said" value={evidence} onChange={setEvidence} styles={styles} theme={theme} placeholder="A comment on the card, the owner's word" />
+        <Field label="Where the result of its run is recorded" value={proof} onChange={setProof} styles={styles} theme={theme} />
+        {unfinished ? <Text style={styles.error}>A card reading needs its URL and whether it is open or archived.</Text> : null}
         <Text style={styles.muted}>For an app: a build covers every card of the project whose merge it holds; being available passes no test, and a merge publishes nothing.</Text>
         <Field label="Builds QA needs, comma-separated" value={variants} onChange={setVariants} styles={styles} theme={theme} placeholder="phone, wear" />
         <Field label="Recorded builds, one per line: variant:environment sha url version (replaces the list)" value={builds} onChange={setBuilds} styles={styles} theme={theme} multiline placeholder="phone:staging 5e1f0c4 https://apk.example.com/staging.apk 1.4.0" />
@@ -164,7 +220,7 @@ function DeliveryEditor({ task, app, onClose, styles, theme }: { task: string; a
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <Actions styles={styles}>
           <Button label="Close" ghost onPress={onClose} styles={styles} />
-          <Button label={saving.isPending ? "Saving…" : "Save"} disabled={saving.isPending || (builds !== recorded && Boolean(parsed.bad))} onPress={() => saving.mutate()} styles={styles} />
+          <Button label={saving.isPending ? "Saving…" : "Save"} disabled={saving.isPending || unfinished || (builds !== recorded && Boolean(parsed.bad))} onPress={() => saving.mutate()} styles={styles} />
         </Actions>
       </Modal.Content>
     </Modal>
