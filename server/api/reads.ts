@@ -717,19 +717,23 @@ function blockingLeft(blocking: { id: string; text: string }[], options: StartOp
  * and latest handoff, and the space's own start template when it has one (the built-in one ships with the plugin).
  */
 export async function instructionsParts(space: SpaceEntry, loaded: LoadedEntity): Promise<InstructionsPart[]> {
-  const parts: InstructionsPart[] = [
+  const parts: InstructionsPart[] = [];
+  for (const { path, ...part } of instructionTexts(space.sync.root, loaded)) parts.push({ ...part, author: await space.sync.lastAuthor(path) });
+  return parts;
+}
+
+/** The same parts without their git authors, read at once (the managed queue's checks); `path`: the file of each in the plan. */
+export function instructionTexts(root: string, loaded: LoadedEntity): (Omit<InstructionsPart, "author"> & { path: string })[] {
+  const template = spaceTemplate(root);
+  return [
     {
       key: taskPartKey(loaded.entity.id),
       name: taskPartName(loaded.handoff?.text, loaded.clarifications),
       text: taskInstructions(loaded.brief, loaded.acceptance.map((a) => a.text), loaded.handoff?.text, loaded.clarifications),
-      author: await space.sync.lastAuthor(loaded.path),
+      path: loaded.path,
     },
+    ...(template === undefined ? [] : [{ key: TEMPLATE_PART, name: "the space's start template", text: template, path: "templates/start-prompt.md" }]),
   ];
-  const template = spaceTemplate(space.sync.root);
-  if (template !== undefined) {
-    parts.push({ key: TEMPLATE_PART, name: "the space's start template", text: template, author: await space.sync.lastAuthor("templates/start-prompt.md") });
-  }
-  return parts;
 }
 
 /**

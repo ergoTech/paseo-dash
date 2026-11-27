@@ -851,6 +851,48 @@ The owner of a machine appoints one agent as the coordinator of one project of a
   same OS user. An agent with an unrestricted shell can call the plugin's RPCs, edit `plugin-data` or
   push to the plan repository itself. The permission bounds what the coordinator tools do.
 
+### Managed queue (pilot)
+
+The owner of a machine turns on the autopilot for one project's ready cards, within limits
+(`shared/managed-queue.ts`, `server/managed/`). Off until turned on; one project at a time.
+
+- **Where the rules live.** `queue-policy.json` (per project: switch, pause with its reason, starts per
+  24 hours, labels) and `queue-starts.json` (the starts made, a window of 24 hours) in `plugin-data`,
+  never in the plan repository. Only the dashboard's own RPCs (`queue.read`, `queue.set`,
+  `queue.preview`, not described to God Mode) and the queue's own pause change them. As the delegation
+  rules: read once, a policy file that differs from what the plugin wrote stops every queue until the
+  owner saves again; something that takes back (off, pause, a lower limit) counts in memory even when
+  it cannot be saved, something that gives (on, resume, a higher limit, other labels) only from the
+  revision the screen showed. A ledger that cannot be read pauses the queues.
+- **What it proposes.** `planQueue` (server/managed/plan.ts) reads the plan, this Mac's readings and
+  the seen record, writes nothing and asks no forge. It reuses `start_candidates`' classes
+  (`classify`) for what holds a card, the ready review (`reviewCards`) for earlier work, cards that read
+  alike and data that could not be read, and the seen record for instructions. In order: a proven
+  duplicate (same forge issue, or same title, brief and acceptance; the older card stays) is
+  `duplicate`; drafts, unheld cards, loops and missing dependencies, a card that waits for another is
+  `after_dependency`, and a card that ran before are `needs_owner`; then a person's work, a merged
+  gate, requirements, an open question, a missing access or device, a failed QA; then the review: merged
+  or earlier work, a card that reads alike, which a person's readiness check settles but never a mark, a
+  requirement, a merge or unseen text; then unseen or changed instructions (also naming where the text
+  came from: a meeting import, a forge issue, a coordinator under delegation). Incomplete data is
+  `read_first`: the queue asks the forge before any start, and only a person's check lets data that
+  stayed incomplete through. The first startable card in the board's order is `next`.
+- **What starts.** After the autopilot's own flags, one card per pass, under the same places and
+  usage limit (`ManagedQueue.pass`): the forge is asked about the card now (`readyReview` of that
+  card), its plan is checked again, the start's own checks (`planStart`, instructions seen as they are)
+  run, the start is counted before it is made and given back when it did not happen, and the claim
+  runs `queueObjection` on the plan it fetched: the queue's switch, pause and limit, the card still
+  todo, in scope, its instructions as planned (`instructionHash`), and the same plan-only checks. A
+  claim another machine wins, or an objection, is no failure: the card is skipped. A failed start, or a
+  start whose outcome is unknown, pauses the queue with the reason; a run of the queue a person
+  releases back to todo or cancels does too. A card with a run in its history is never started by the
+  queue again. Starts through the plan's claim are single across machines as ever; the limit and the
+  ledger are this machine's. The limit is the same as for delegation: not a boundary against
+  processes of the same OS user.
+- **Not covered.** Nothing a card's own text says lets it start: a brief, a label or an import can only
+  hold a card back. It does not cancel duplicates, move cards or prepare them; preparing is the
+  delegated coordinator's permission (Delegated planning).
+
 ### 3. PR/MR state
 
 - **Primary: Paseo's own forge data.** The workspace descriptor carries `githubRuntime.pullRequest`

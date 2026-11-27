@@ -41,6 +41,8 @@ import { readPlanToolsSettings, writePlanToolsSettings } from "./server/plan-too
 import { planToolsSettingsRpc, planToolsSettingsSetRpc } from "./shared/plan-tools.ts";
 import { enableDelegation, grantDelegation, listDelegationAgents, readDelegation, readDelegationLog, revokeDelegation } from "./server/delegation/rpc.ts";
 import { delegationAgentsRpc, delegationEnableRpc, delegationGrantRpc, delegationLogRpc, delegationReadRpc, delegationRevokeRpc } from "./shared/delegation.ts";
+import { previewQueue, readQueue, setQueue } from "./server/managed/rpc.ts";
+import { queuePreviewRpc, queueReadRpc, queueSetRpc } from "./shared/managed-queue.ts";
 import { openPlanTools } from "./server/agent-tools/plan-hook.ts";
 import { listSpaces, syncAnswer } from "./server/spaces/list.ts";
 import { localProjects } from "./server/spaces/local.ts";
@@ -292,6 +294,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(delegationGrantRpc, started((input) => grantDelegation(dashboard, input)));
   server.handle(delegationRevokeRpc, started((input) => revokeDelegation(dashboard, input)));
   server.handle(delegationLogRpc, started((input) => readDelegationLog(dashboard, input)));
+  // The managed queue (shared/managed-queue.ts), only on the dashboard's screens: ChatGPT cannot turn it on or raise its limit.
+  server.handle(queueReadRpc, started(() => readQueue(ctx)));
+  server.handle(queueSetRpc, started((input) => setQueue(ctx, input)));
+  server.handle(queuePreviewRpc, started((input) => previewQueue(ctx, input)));
 
   // The Laconote import (Inbox tab, Settings), also not described to God Mode: ChatGPT has add_to_inbox.
   server.handle(laconoteSettingsRpc, started(() => laconoteSettings(ctx)));

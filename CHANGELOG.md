@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Managed queue (pilot)
+
+- Settings → "Managed queue (pilot)", off by default: for one project, a switch, a limit of starts per
+  24 hours, a pause and optional labels the queue is narrowed to. Live's "Managed queue" previews, per
+  card of the project, what the queue would do and why (next, queued, forge read first, waits for a
+  card, duplicate, waits for you), also while the queue is off, and lists the cases that wait for you
+  with the step each needs.
+- The autopilot starts the queue's ready cards one per check after its own flags, under the same
+  places and usage limit. The limit of starts, the pause and turning the queue off count again right
+  before a start and inside the claim, on the plan it fetched, so a start that was only waiting for
+  its turn stops too; a card changed meanwhile, or taken by another machine, is not started and is
+  no failure. A start that fails, or a run a person releases, pauses the queue; a card that ran once is
+  not started again by it.
+- A card enters the queue only when nothing holds it: it waits for no card, is not a person's work,
+  needs no decision, access, device or QA, has no open question, shows no merged or earlier work,
+  reads like no other card, its forge data was read, and you have seen its instructions as they are
+  now. A card that becomes ready when its dependency is done joins the queue by itself. A proven
+  duplicate (same issue, or same title, brief and acceptance) is held; a text match is only a
+  proposal until you record a check (`readiness_note`). Text on a card gives no permission.
+- Nothing is described to ChatGPT: `meta.describe` is unchanged.
+
 ### Delegated planning (pilot)
 
 - Settings → "Delegated planning (pilot)", off by default: appoint an open agent as the coordinator of
