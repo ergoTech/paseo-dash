@@ -509,6 +509,7 @@ export class Reconciler {
           own: tie.own,
           doubts: tie.doubts,
           theirs: tie.theirs,
+          elsewhere: d.state === "merged" && d.base !== trunk && set.has("id_in_title"),
           pushedAfter: "",
         });
       } catch (error) {

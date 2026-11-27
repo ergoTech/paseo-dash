@@ -344,8 +344,9 @@ test("only a PR/MR the verdict verifies vouches for a branch tip: one merged els
     for (const [id, n] of [["TST-AC001", 41], ["TST-AC002", 42], ["TST-AC003", 43]] as const) await s.card(id, `status: todo\n${links(n)}`, TICKED);
     await s.pass();
     await s.settle();
-    for (const id of ["TST-AC001", "TST-AC002", "TST-AC003"]) {
-      assert.deepEqual([s.taskOf(id).status, hold(s, id)?.code], ["todo", "pushed_after"], id);
+    // The one whose title names the card is held on where it landed, which comes first.
+    for (const [id, code] of [["TST-AC001", "base"], ["TST-AC002", "pushed_after"], ["TST-AC003", "pushed_after"]] as const) {
+      assert.deepEqual([s.taskOf(id).status, hold(s, id)?.code], ["todo", code], id);
     }
   } finally {
     s.stop();
@@ -376,4 +377,30 @@ test("a merged PR/MR on a shared branch stays this card's to verify when it name
   const task = s.space().sync.plan.entities.get("TST-AC003")!.entity as Task;
   const tie = (title: string) => judgeTie(index, task, { url: PR_URL(46), head: "feat/shared", title }, ["branch"]).theirs;
   assert.deepEqual([tie("TST-AC001 and TST-AC003"), tie("TST-AC001 only")], [false, true], "the title is read even when only the branch listing found it");
+});
+
+test("a follow-up whose title names the card, merged into another branch, holds it after its branch is deleted", async () => {
+  const s = await reconcileSetup();
+  try {
+    const root = s.dashboard.projectRoots.get("prj_core")!;
+    sh(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "merge");
+    const a = sh(root, "rev-parse", "HEAD").trim();
+    sh(root, "push", "--quiet", "origin", "HEAD:main");
+    // The follow-up's merge commit: after the build, on a branch that is not the target one.
+    sh(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "on develop");
+    const elsewhere = sh(root, "rev-parse", "HEAD").trim();
+    const build = `delivery: {variants: [phone], qa: passed, builds: [{variant: phone, sha: ${a}, url: "https://apk.example.com/a.apk"}]}\n`;
+    s.github.prs = [merged(41, { head: "feat/x", mergeSha: a }), merged(51, { head: "feat/x", base: "develop", mergeSha: elsewhere, title: "TST-AC001 follow-up" })];
+    // The branch is gone on origin: no tip says anything was pushed after #41.
+    s.github.tips = { "feat/x": "" };
+    await s.card("TST-AC001", `status: todo\n${links(41)}${build}`, TICKED);
+    await s.pass();
+    await s.settle();
+    assert.deepEqual([s.taskOf("TST-AC001").status, hold(s, "TST-AC001")?.code], ["todo", "base"]);
+    assert.match(hold(s, "TST-AC001")!.text, /#51 was merged into develop, not main/);
+    const apk = (await taskDelivery(s.ctx, { task: "TST-AC001" })).steps.find((x) => x.step === "APK phone")!;
+    assert.equal(apk.state, "awaited", "and the build without it covers nothing");
+  } finally {
+    s.stop();
+  }
 });

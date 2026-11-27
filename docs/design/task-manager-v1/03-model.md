@@ -666,7 +666,8 @@ on what is old or changed. A card closes only when everything holds, and then on
 - every PR/MR the card names (its own and the shared ones it links, its run reported, its branch holds
   or closed its issue) merged into the target branch (`base`, else the project's `trunk`) with nothing
   pushed to its branch after its merges; none still open (an open PR/MR whose title or branch names the
-  card counts too) and none linked and dropped without a merge. A branch's tip counts as merged only
+  card counts too, as does a merged one whose title names it and that landed in another branch) and none
+  linked and dropped without a merge. A branch's tip counts as merged only
   when it is the head of one of those verified PR/MRs. A merged PR/MR that is another card's and
   reaches this one only through a branch they share, naming this card nowhere read, is that card's to
   verify;
