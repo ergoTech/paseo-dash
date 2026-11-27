@@ -1,7 +1,7 @@
 import { hasLiveRun, type Task } from "../../shared/model.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import type { Closure } from "../sync/ops.ts";
-import { type CardFacts, merged, named, type PrFact } from "./facts.ts";
+import { type CardFacts, merged, mergedSince, named, type PrFact } from "./facts.ts";
 import { scopeText } from "./history.ts";
 import { planHolds } from "./plan-gate.ts";
 import type { Rule } from "./rules.ts";
@@ -75,9 +75,8 @@ function forgeHolds(task: Task, rule: Rule, facts: CardFacts | undefined, scope:
       source: linkSource(task),
     });
   }
-  const created = Date.parse(task.created ?? "");
   // Merged before the card existed: earlier work, whatever names it.
-  const after = (pr: PrFact) => pr.ways.includes("run") || Date.parse(pr.mergedAt) > created;
+  const after = (pr: PrFact) => mergedSince(pr, task.created);
   const done = merged(facts).filter((pr) => pr.own && after(pr));
   const open = facts.prs.filter((pr) => (pr.state === "open" || pr.state === "draft") && named(pr));
   for (const pr of open) {
@@ -93,7 +92,7 @@ function forgeHolds(task: Task, rule: Rule, facts: CardFacts | undefined, scope:
     holds.push({
       code: "closed_pr",
       text: `${pr.label} was closed without a merge: part of the work may be missing`,
-      next: "if it was replaced, take its link off the card; else reopen it, or mark the card done yourself",
+      next: `if it was replaced, take its link off the card; else reopen it, or ${markDone}`,
       by: "owner",
       source: sourceOf(pr),
     });
@@ -127,7 +126,7 @@ function forgeHolds(task: Task, rule: Rule, facts: CardFacts | undefined, scope:
       });
     }
     if (pr.pushedAfter) {
-      holds.push({ code: "pushed_after", text: `${pr.head} has commits pushed after ${pr.label} merged (${short(pr.pushedAfter)})`, next: "open a PR/MR for them, or delete the branch if they are not wanted", by: "owner", source });
+      holds.push({ code: "pushed_after", text: `${pr.head} has commits pushed after ${pr.label} merged (${short(pr.pushedAfter)})`, next: `open a PR/MR for them, or ${markDone} if they are not this card's work`, by: "owner", source });
     }
     const checks = pr.checks;
     if (!checks) {
@@ -216,7 +215,8 @@ export function judge(input: JudgeInput): Verdict {
   holds.sort(byOrder);
   const sources = (facts?.prs ?? []).map(sourceOf);
   if (holds.length) return { close: false, holds, sources };
-  const done = merged(facts!).filter((pr) => pr.own);
+  // The same merged work the holds verified: an older PR/MR a card links is no part of its closing.
+  const done = merged(facts!).filter((pr) => pr.own && mergedSince(pr, task.created));
   if (rule.mode !== "close") {
     return {
       close: false,

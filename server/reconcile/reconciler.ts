@@ -12,7 +12,7 @@ import { type ForgeCli, type ForgePr, prKey, prUrlOfProject } from "../tracker/f
 import { idMatches, type MergedPr } from "../tracker/merged.ts";
 import type { PrView } from "../tracker/prs.ts";
 import { apkStates, buildPool, isApp } from "./android.ts";
-import { type CardFacts, merged, named, type PrFact, type Scope } from "./facts.ts";
+import { type CardFacts, merged, mergedSince, named, type PrFact, type Scope } from "./facts.ts";
 import { scopeSince } from "./history.ts";
 import { type Rule, ruleOf } from "./rules.ts";
 import { judgeTie, tieIndex, type Way } from "./ties.ts";
@@ -81,6 +81,9 @@ export class Reconciler {
   private readonly openLists = new Map<string, { at: number; list: Promise<ForgePr[] | undefined> }>();
   private active = 0;
   private readonly waiting: (() => void)[] = [];
+  /** Build comparisons screens asked for, one at a time, and the cards waiting for one. */
+  private covers: Promise<unknown> = Promise.resolve();
+  private readonly covering = new Set<string>();
   private readonly options: ReconcilerOptions;
   private passing = false;
   private again = false;
@@ -100,6 +103,17 @@ export class Reconciler {
 
   stop(): void {
     this.stopped = true;
+  }
+
+  /** Queues a comparison a screen noticed is due; it is not waited for. */
+  private coverLater(space: SpaceEntry, task: Task, facts: CardFacts): void {
+    const id = key(space, task);
+    if (this.covering.has(id) || facts.apksKey === this.apksKey(space, task)) return;
+    this.covering.add(id);
+    this.covers = this.covers
+      .then(() => (this.stopped ? undefined : this.cover(space, task, facts)))
+      .catch((error: unknown) => this.options.log?.(`builds of ${task.id}: ${String((error as Error)?.message ?? error)}`))
+      .finally(() => this.covering.delete(id));
   }
 
   /** The owner's rule for the card's project; undefined when it is off. */
@@ -215,7 +229,7 @@ export class Reconciler {
     if (!this.rule(space, task) || !this.evidence(space, task)) return undefined;
     const current = this.current(space, task);
     if (this.facts.has(key(space, task)) && !current) void this.read(space, task);
-    else if (current) void this.cover(space, task, current).catch(() => undefined);
+    else if (current) this.coverLater(space, task, current);
     return this.judgeCard(space, task.id, false, "latest");
   }
 
@@ -234,9 +248,10 @@ export class Reconciler {
     const id = key(space, task);
     const running = this.reading.get(id);
     if (running) return running;
-    const read = this.slot(() => this.gather(space, task))
+    // A read still waiting for its turn when the plugin stops asks nothing.
+    const read = this.slot(async () => (this.stopped ? undefined : this.gather(space, task)))
       .then((facts) => {
-        if (!this.stopped) this.facts.set(id, facts);
+        if (facts && !this.stopped) this.facts.set(id, facts);
         return facts;
       })
       .catch((error: unknown) => {
@@ -493,27 +508,36 @@ export class Reconciler {
           ways,
           own: tie.own,
           doubts: tie.doubts,
+          theirs: tie.theirs,
           pushedAfter: "",
         });
       } catch (error) {
         unknown.push(`${url}: ${String((error as Error)?.message ?? error)}`);
       }
     }
-    // Work pushed to a PR/MR's branch after its merge is not in the target branch.
+    // Work pushed to a PR/MR's branch after its merge is not in the target branch. A branch may have
+    // had several merged PR/MRs: its tip is merged work when it is the head of one the verdict verifies
+    // (target branch, checks, review: verdict.ts), and else came after the latest of them. No other
+    // PR/MR vouches for it: one merged elsewhere, or one nobody checks, would clear the hold.
+    const byHead = new Map<string, PrFact[]>();
     for (const pr of prs) {
-      if (pr.state !== "merged" || !named(pr) || !pr.headSha || !SAFE_BRANCH.test(pr.head) || pr.head === trunk || pr.head === project.trunk) continue;
+      if (pr.state !== "merged" || !named(pr) || !mergedSince(pr, task.created) || !pr.headSha) continue;
+      if (!SAFE_BRANCH.test(pr.head) || pr.head === trunk || pr.head === project.trunk) continue;
       // A branch other cards plan on moves with their work.
       if (index.branches.get(`${task.project}\n${pr.head}`)?.some((id) => id !== task.id)) continue;
-      const tip = await forge.branchTip(root, pr.head);
-      if (tip === undefined) unknown.push(`whether commits were pushed to ${pr.head} after ${pr.label} could not be read`);
-      else if (tip && tip !== pr.headSha) pr.pushedAfter = tip;
+      byHead.set(pr.head, [...(byHead.get(pr.head) ?? []), pr]);
+    }
+    for (const [head, merges] of byHead) {
+      const latest = [...merges].sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0]!;
+      const tip = await forge.branchTip(root, head);
+      if (tip === undefined) unknown.push(`whether commits were pushed to ${head} after ${latest.label} could not be read`);
+      else if (tip && !merges.some((pr) => pr.headSha === tip)) latest.pushedAfter = tip;
     }
     const read = facts(trunk, prs);
     await this.cover(space, task, read);
     // Last, so the history read is the newest thing a verdict stands on.
-    const created = Date.parse(task.created ?? "");
     const latest = merged(read)
-      .filter((pr) => pr.own && (pr.ways.includes("run") || Date.parse(pr.mergedAt) > created))
+      .filter((pr) => pr.own && mergedSince(pr, task.created))
       .map((pr) => pr.mergedAt)
       .sort()
       .at(-1);

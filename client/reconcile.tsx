@@ -53,6 +53,8 @@ export function NeedCards({ item, onOpen, theme, styles }: { item: Item; onOpen:
           ) : null}
           {merge && card.blockers?.length ? card.blockers.map((blocker) => <Text key={blocker} style={styles.muted}>{`  · ${blocker}`}</Text>) : null}
           {!merge ? <Text style={styles.muted}>{`${card.note}${card.source ? ` (${card.source})` : ""}`}</Text> : null}
+          {/* A ready row's note says what else the owner should know: work of its card that is not read. */}
+          {merge && !card.blockers?.length && card.note !== "ready to merge" ? <Text style={styles.muted}>{card.note}</Text> : null}
         </View>
       ))}
     </View>

@@ -40,6 +40,12 @@ export interface Tie {
   own: boolean;
   /** Why it is not the card's own, or what is shared; empty when nothing doubts it. */
   doubts: string[];
+  /**
+   * Another card's work that only a shared branch brings to this one: the branch is the sole tie, other
+   * cards plan on it, another card's run reported it or it names another card, and neither its title
+   * nor its branch names this one.
+   */
+  theirs: boolean;
 }
 
 export function judgeTie(index: TieIndex, task: Task, pr: { url: string; head: string; title: string }, ways: Way[]): Tie {
@@ -48,7 +54,8 @@ export function judgeTie(index: TieIndex, task: Task, pr: { url: string; head: s
   const listed = (ids: string[]) => ids.slice(0, 3).join(", ");
   const claimed = others(index.claims.get(key));
   const linked = others(index.links.get(key));
-  const names = others(namedIds(`${pr.title}\n${pr.head}`)).filter((id) => index.tasks.has(id));
+  const said = namedIds(`${pr.title}\n${pr.head}`);
+  const names = others(said).filter((id) => index.tasks.has(id));
   const sharing = pr.head ? others(index.branches.get(`${task.project ?? ""}\n${pr.head}`)) : [];
   const has = (way: Way) => ways.includes(way);
   const run = has("run");
@@ -63,5 +70,9 @@ export function judgeTie(index: TieIndex, task: Task, pr: { url: string; head: s
     !claimed.length &&
     names_ok &&
     (run || has("closes_issue") || has("id_in_branch") || (has("link") && !linked.length) || (has("branch") && !sharing.length));
-  return { own, doubts };
+  // Anything else that points here (a mention of this card, even in a description) keeps it this card's
+  // to verify too. The branch listing carries no mention, so the title and branch are read here as well.
+  const onlyBranch = has("branch") && ways.every((way) => way === "branch") && !said.includes(task.id);
+  const theirs = onlyBranch && sharing.length > 0 && claimed.length + names.length > 0;
+  return { own, doubts, theirs };
 }

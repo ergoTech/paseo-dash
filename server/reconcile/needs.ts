@@ -180,10 +180,12 @@ function mergeQueue(dashboard: Dashboard, entries: Entry[]): NeedCardRow[] {
     const [first, ...others] = row.cards;
     const blockers = blockersOf(row);
     const also = others.map(({ entry }) => entry.task.id);
+    const unread = row.cards.flatMap(({ facts }) => facts.limits.map((limit) => limit.why))[0];
     return {
       task: first!.entry.task.id,
       title: first!.entry.task.title,
-      note: cut([also.length ? `also named by ${also.join(", ")}` : "", blockers.length ? blockers.join("; ") : "ready to merge"].filter(Boolean).join("; "), 200),
+      // The other cards of the row are in `also`.
+      note: cut([blockers.length ? blockers.join("; ") : "ready to merge", unread ? `the card has work not read: ${unread}` : ""].filter(Boolean).join("; "), 200),
       source: `${first!.pr.label} open`,
       links: [{ label: first!.pr.label, url: row.url }],
       order: index + 1,

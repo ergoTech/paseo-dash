@@ -8,8 +8,10 @@ import { startTask, updateTask } from "../api/writes.ts";
 import { taskDelivery } from "../delivery.ts";
 import { readOverview } from "../overview.ts";
 import { settled } from "../runner/testing.ts";
+import type { Task } from "../../shared/model.ts";
 import { sh } from "../sync/testing.ts";
 import { type FakePr, MERGED_AT, PR_URL, reconcileSetup } from "./testing.ts";
+import { judgeTie, tieIndex } from "./ties.ts";
 
 /**
  * Holes an independent review of JOBBY-G2SEY found, one test each: each of these closed a card,
@@ -221,4 +223,157 @@ test("a screen over many cards asks the forge about two of them at a time", asyn
   } finally {
     s.stop();
   }
+});
+
+test("a branch with several merged PR/MRs is whole while its tip is one of their heads, on a card and on a run", async () => {
+  const s = await reconcileSetup();
+  try {
+    const first = "a".repeat(40);
+    const second = "b".repeat(40);
+    s.github.prs = [
+      merged(41, { head: "feat/x", headSha: first, mergedAt: MERGED_AT }),
+      merged(42, { head: "feat/x", headSha: second, mergedAt: new Date(Date.parse(MERGED_AT) + 60_000).toISOString() }),
+      merged(43, { head: "feat/y", headSha: first }),
+    ];
+    s.github.tips = { "feat/x": second, "feat/y": second };
+    await s.card("TST-AC001", `status: todo\nbranch: feat/x\n${links(41, 42)}`, TICKED);
+    await s.card("TST-AC002", `status: todo\n${links(43)}`, TICKED);
+    await s.pass();
+    await s.settle();
+    assert.equal(s.taskOf("TST-AC001").status, "done", JSON.stringify(hold(s, "TST-AC001")));
+    assert.deepEqual([s.taskOf("TST-AC002").status, hold(s, "TST-AC002")?.code], ["todo", "pushed_after"], "a tip no merged PR/MR had is unmerged work");
+    assert.match(hold(s, "TST-AC002")!.next, /or mark it done .* if they are not this card's work/);
+  } finally {
+    s.stop();
+  }
+  const run = await reconcileSetup("close", { paseo: { profiles: [PROFILE] } });
+  try {
+    await mergedRun(run);
+    const follow = "b".repeat(40);
+    run.github.prs.push(merged(8, { head: "feat/login", headSha: follow, mergedAt: new Date(Date.parse(MERGED_AT) + 60_000).toISOString() }));
+    run.github.tips["feat/login"] = follow;
+    await run.dashboard.prs.checkAll();
+    await run.settle();
+    assert.equal(run.task("TST-FX001")!.status, "done", getTask(run.ctx, { task: "TST-FX001" }).pr);
+  } finally {
+    run.stop();
+  }
+});
+
+test("another card's merged PR/MR on a shared branch is that card's to verify; an open one still holds", async () => {
+  const s = await reconcileSetup();
+  try {
+    s.github.prs = [merged(41, { head: "feat/shared", checks: ["FAILURE"] }), merged(42, { head: "feat/own-two" })];
+    s.github.tips = { "feat/shared": "0".repeat(40) };
+    await s.card("TST-AC001", `status: in_progress\nbranch: feat/shared\nrun_id: r-one\nrun_by: anna\nrun_host: anna-mbp\nrun_branch: feat/shared\nrun_started: 2026-11-21T10:00:00Z\nrun_pr: ${PR_URL(41)}\n`, TICKED);
+    await s.card("TST-AC002", `status: todo\nbranch: feat/shared\n${links(42)}`, TICKED);
+    await s.pass();
+    await s.settle();
+    assert.equal(s.taskOf("TST-AC002").status, "done", JSON.stringify(hold(s, "TST-AC002")));
+    assert.deepEqual(s.taskOf("TST-AC002").auto_closed?.prs, [PR_URL(42)]);
+    s.github.prs.push({ n: 44, state: "OPEN", head: "feat/shared" }, merged(45, { head: "feat/own-three" }));
+    await s.card("TST-AC003", `status: todo\nbranch: feat/shared\n${links(45)}`, TICKED);
+    await s.pass();
+    await s.settle();
+    assert.deepEqual([s.taskOf("TST-AC003").status, hold(s, "TST-AC003")?.code], ["todo", "open_pr"]);
+  } finally {
+    s.stop();
+  }
+});
+
+test("a linked PR/MR merged before the card existed is no part of its closing", async () => {
+  const s = await reconcileSetup();
+  try {
+    s.github.prs = [merged(40, { mergedAt: "2026-11-01T10:00:00Z", checks: ["FAILURE"] }), merged(41)];
+    await s.card("TST-AC001", `status: todo\n${links(40, 41)}`, TICKED);
+    await s.pass();
+    await s.settle();
+    assert.deepEqual(s.taskOf("TST-AC001").auto_closed?.prs, [PR_URL(41)]);
+    assert.doesNotMatch(s.taskOf("TST-AC001").auto_closed!.note, /#40/);
+  } finally {
+    s.stop();
+  }
+});
+
+test("work of a card that is never read holds its closing, not the merge of its green PR/MR", async () => {
+  const s = await reconcileSetup();
+  try {
+    s.github.prs = [{ n: 50, state: "OPEN", checks: ["SUCCESS"] }];
+    await s.card("TST-AC001", `status: todo\nlinks: ["${PR_URL(50)}", "https://github.com/acme/other/pull/9"]\n`, TICKED);
+    await s.pass();
+    const row = readOverview(s.dashboard, {}).needs_you.find((n) => n.kind === "merge")!.cards![0]!;
+    assert.deepEqual([row.ready, row.blockers], [true, []]);
+    assert.match(row.note, /ready to merge; the card has work not read: the link/);
+    assert.equal(s.taskOf("TST-AC001").status, "todo");
+  } finally {
+    s.stop();
+  }
+});
+
+test("a read still waiting for its turn when the plugin stops asks the forge nothing", async () => {
+  const s = await reconcileSetup();
+  try {
+    s.github.prs = [merged(1), merged(2), merged(3), merged(4)];
+    for (let i = 1; i <= 4; i += 1) await s.card(`TST-AC00${i}`, `status: todo\n${links(i)}labels: [manual]\n`, TICKED);
+    const reads = Array.from({ length: 4 }, (_, i) => s.dashboard.reconciler.read(s.space(), s.taskOf(`TST-AC00${i + 1}`)));
+    s.dashboard.reconciler.stop();
+    const answers = await Promise.all(reads);
+    assert.deepEqual(answers.slice(2), [undefined, undefined]);
+    assert.equal(s.github.calls.some((call) => call.endsWith("/3") || call.endsWith("/4")), false);
+  } finally {
+    s.stop();
+  }
+});
+
+test("only a PR/MR the verdict verifies vouches for a branch tip: one merged elsewhere clears nothing", async () => {
+  const s = await reconcileSetup();
+  try {
+    const first = "a".repeat(40);
+    const second = "b".repeat(40);
+    const later = new Date(Date.parse(MERGED_AT) + 60_000).toISOString();
+    // The follow-ups from the same branches went into develop: named in a title, in a description, not at all.
+    s.github.prs = [
+      merged(41, { head: "feat/x", headSha: first }),
+      merged(51, { head: "feat/x", headSha: second, base: "develop", mergedAt: later, title: "TST-AC001 follow-up" }),
+      merged(42, { head: "feat/y", headSha: first }),
+      merged(52, { head: "feat/y", headSha: second, base: "develop", mergedAt: later, body: "More of TST-AC002.", checks: ["FAILURE"] }),
+      merged(43, { head: "feat/z", headSha: first }),
+      merged(53, { head: "feat/z", headSha: second, base: "develop", mergedAt: later }),
+    ];
+    s.github.tips = { "feat/x": second, "feat/y": second, "feat/z": second };
+    for (const [id, n] of [["TST-AC001", 41], ["TST-AC002", 42], ["TST-AC003", 43]] as const) await s.card(id, `status: todo\n${links(n)}`, TICKED);
+    await s.pass();
+    await s.settle();
+    for (const id of ["TST-AC001", "TST-AC002", "TST-AC003"]) {
+      assert.deepEqual([s.taskOf(id).status, hold(s, id)?.code], ["todo", "pushed_after"], id);
+    }
+  } finally {
+    s.stop();
+  }
+});
+
+test("a merged PR/MR on a shared branch stays this card's to verify when it names the card", async () => {
+  const s = await reconcileSetup();
+  try {
+    // #41 is another card's run's, merged elsewhere with a failing check, and says it carries AC002 too; #46 says so for AC003 in its title.
+    s.github.prs = [
+      merged(41, { head: "feat/shared", base: "develop", checks: ["FAILURE"], body: "Also the rest of TST-AC002." }),
+      merged(46, { head: "feat/shared", checks: ["FAILURE"], title: "TST-AC001 and TST-AC003" }),
+      merged(42, { head: "feat/two" }),
+      merged(43, { head: "feat/three" }),
+    ];
+    s.github.tips = {};
+    await s.card("TST-AC001", `status: in_progress\nbranch: feat/shared\nrun_id: r-one\nrun_by: anna\nrun_host: anna-mbp\nrun_branch: feat/shared\nrun_started: 2026-11-21T10:00:00Z\nrun_pr: ${PR_URL(41)}\n`, TICKED);
+    await s.card("TST-AC002", `status: todo\nbranch: feat/shared\n${links(42)}`, TICKED);
+    await s.card("TST-AC003", `status: todo\nbranch: feat/shared\n${links(43)}`, TICKED);
+    await s.pass();
+    await s.settle();
+    assert.deepEqual([s.taskOf("TST-AC002").status, s.taskOf("TST-AC003").status], ["todo", "todo"]);
+  } finally {
+    s.stop();
+  }
+  const index = tieIndex(s.space().sync.plan);
+  const task = s.space().sync.plan.entities.get("TST-AC003")!.entity as Task;
+  const tie = (title: string) => judgeTie(index, task, { url: PR_URL(46), head: "feat/shared", title }, ["branch"]).theirs;
+  assert.deepEqual([tie("TST-AC001 and TST-AC003"), tie("TST-AC001 only")], [false, true], "the title is read even when only the branch listing found it");
 });

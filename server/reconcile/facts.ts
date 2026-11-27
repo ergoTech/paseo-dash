@@ -28,6 +28,8 @@ export interface PrFact {
   /** Something names the card itself and nothing gives the PR/MR to another card (server/reconcile/ties.ts). */
   own: boolean;
   doubts: string[];
+  /** Another card's work on a branch they share (server/reconcile/ties.ts). */
+  theirs: boolean;
   /** The branch's tip when commits were pushed after the merge, "" when none were or it could not be told. */
   pushedAfter: string;
 }
@@ -38,10 +40,16 @@ const NAMED: Way[] = ["run", "link", "branch", "id_in_branch", "closes_issue"];
 /**
  * A PR/MR the card names as part of its work: every one of them must be merged and verified before the
  * card is complete, and a build covers the card only with all of them. An open one also counts when its
- * title names the card: a follow-up nobody linked is still work that is not in.
+ * title names the card: a follow-up nobody linked is still work that is not in. A merged one that is
+ * another card's, on a branch they share, is that card's to verify.
  */
-export const named = (pr: Pick<PrFact, "own" | "ways" | "state">): boolean =>
-  pr.own || pr.ways.some((way) => NAMED.includes(way)) || ((pr.state === "open" || pr.state === "draft") && pr.ways.includes("id_in_title"));
+export const named = (pr: Pick<PrFact, "own" | "ways" | "state" | "theirs">): boolean =>
+  !(pr.state === "merged" && pr.theirs) &&
+  (pr.own || pr.ways.some((way) => NAMED.includes(way)) || ((pr.state === "open" || pr.state === "draft") && pr.ways.includes("id_in_title")));
+
+/** Whether a merged PR/MR can be the card's work: merged after the card existed, or its own run's. */
+export const mergedSince = (pr: Pick<PrFact, "ways" | "mergedAt">, created: string | undefined): boolean =>
+  pr.ways.includes("run") || Date.parse(pr.mergedAt) > Date.parse(created ?? "");
 
 /** The card as it stood when its work merged, from the plan's history (server/reconcile/history.ts). */
 export interface Scope {

@@ -3,9 +3,9 @@ import type { Plan } from "../plan/load.ts";
 import type { CardFacts, PrFact } from "./facts.ts";
 
 /**
- * What stands between an open PR/MR and its merge, each blocker apart: its checks, its review, whether
- * the forge would merge it, and the cards it depends on. Ready means the forge itself confirmed all
- * of them; a fact it did not give is a blocker, never a pass. `queue`: the open PR/MRs of the other
+ * What stands between an open PR/MR and its merge, each blocker apart: its checks, its review, its
+ * target branch, whether the forge would merge it, and the cards it depends on. Ready means the forge
+ * itself confirmed them; a fact it did not give is a blocker, never a pass. `queue`: the open PR/MRs of the other
  * cards in the same list, so a dependency that has one says "merge it first"; `codeMerged`: a dependency
  * whose own PR/MRs are all merged no longer holds a merge back, whatever its QA says.
  */
@@ -32,7 +32,8 @@ export function mergeBlockers(plan: Plan, task: Task, facts: CardFacts, pr: PrFa
     // Code merged is all a merge waits for: its QA and acceptance are another step (a merge accepts nothing).
     else if (other.status !== "done" && other.status !== "canceled" && !codeMerged(id)) out.push(`waits for ${id} (${other.status}, its code is not merged)`);
   }
-  const unread = facts.unknown[0] ?? facts.limits[0]?.why;
-  if (unread) out.push(`forge facts incomplete: ${unread}`);
+  // What waiting changes blocks the merge until it is read; a part of the card that is never read
+  // (facts.limits) holds the card's closing, not this PR/MR's merge.
+  if (facts.unknown.length) out.push(`forge facts incomplete: ${facts.unknown[0]}`);
   return out;
 }

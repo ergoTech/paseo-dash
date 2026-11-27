@@ -665,8 +665,11 @@ on what is old or changed. A card closes only when everything holds, and then on
   not its work;
 - every PR/MR the card names (its own and the shared ones it links, its run reported, its branch holds
   or closed its issue) merged into the target branch (`base`, else the project's `trunk`) with nothing
-  pushed to its branch after the merge; none still open (an open PR/MR whose title or branch names the
-  card counts too) and none linked and dropped without a merge;
+  pushed to its branch after its merges; none still open (an open PR/MR whose title or branch names the
+  card counts too) and none linked and dropped without a merge. A branch's tip counts as merged only
+  when it is the head of one of those verified PR/MRs. A merged PR/MR that is another card's and
+  reaches this one only through a branch they share, naming this card nowhere read, is that card's to
+  verify;
 - every check the forge reports passing, with at least one that succeeded (a PR/MR with none, or with
   only skipped ones, counts only where the owner allows it for the project); a requested change in a
   review holds it. Paseo Dash reads the checks the forge lists: a required check that never reported
@@ -702,7 +705,8 @@ The closing names the run and the merged PR/MR it was asked for, so a run that t
 meanwhile is never ended by an earlier run's merge. Otherwise the run stays, its agent is left alone,
 the merged PR/MR's note says what holds it, and the next step is a release (a held task is not set
 done). A card the rule closed once and its owner reopened is not closed again, by a new run either.
-Nothing here starts, stops, releases or restarts a run.
+Nothing here starts, stops, releases or restarts a run. A held run keeps what a live run keeps: while
+its agent waits it can occupy one of the autopilot's places until it is released.
 
 ### Projects' web hosts (runtime, per machine)
 
