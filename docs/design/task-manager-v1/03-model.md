@@ -266,6 +266,9 @@ delivery:               # optional: the way from merged code to accepted work (s
   variants: [phone, wear]       # an app: the builds QA needs; environment defaults to staging
   builds: [{variant: phone, environment: staging, sha: 5e1f0c4, url: "https://apk.example.com/staging.apk", version: 1.4.0}]
   play: unpublished     # unpublished | submitted | published: recorded, never inferred
+qa_cards:               # optional: QA cards on Trello as last read (see "QA cards"); written by trello_cards only
+  - { url: "https://trello.com/c/AbCd1234", state: archived, checked: "2026-11-27T12:00:00Z", name: "#12 · Sign-in", replaced_by: ["https://trello.com/c/EfGh5678"], evidence: "comment on the card" }
+  - { url: "https://trello.com/c/EfGh5678", state: open, checked: "2026-11-27T12:00:00Z", list: "Ready to test", tester: Anna }
 auto_closed:            # written once by the owner's closing rule (see "Automatic reconciliation"), never by hand
   at: 2026-11-27T12:31:31Z
   by: ergo-mbp
@@ -631,6 +634,63 @@ and whether the stage build holds the merge (`git merge-base --is-ancestor` in t
 unknown for a commit it lacks). Passing checks never tick a manual check; QA's result or the owner's
 acceptance closes the work (or, in a reconciled project, the rule below). Paseo Dash has no Trello access: it links the card and says the state last
 recorded, and gives a QA handoff text to post on it.
+
+#### QA cards
+
+`qa_cards` holds the task's QA cards on Trello as someone with Trello access last read them (an agent
+or an assistant with its own Trello connection, or a person in the task screen). Paseo Dash reads no
+Trello itself: it has no connector, key or token, and it never moves or edits a card. Reading cards by
+itself would need a read-only Trello API key and token for the plugin; neither is set up or asked for.
+
+`update_task` takes them as `delivery.trello_cards`, each with `url`, `checked` (when Trello was
+read) and either `state` (`open`, `archived`) or `unreadable` (why it could not be read). Optional:
+`name`, `list`, `tester` (who tests next, as the card says), `replaced_by` with `evidence`, and
+`proof` (where the result of the card's run is recorded). A field left out keeps what is recorded; `""`
+or `[]` takes it off. The plan keeps at most 12 cards per task, and a reading removes no card; it
+writes the cards as Paseo Dash reads them, so a key added by hand that it does not know is dropped.
+
+A statement settles the run it was made in, so a retest on the same card shows:
+
+- a card read open again after its archive keeps its earlier replacement as `was_replaced_by`
+  (history; it settles nothing, and a replacement named there and never read stays unsettled), and
+  drops its `proof` unless that reading gives it again;
+- a card read open in another list drops its `proof` the same way. Whoever records a finished card
+  moved to a "done" list gives its proof again.
+
+A request is refused whole, changing nothing, when:
+
+- a card is not tied to the task. Tied: the card `delivery.trello` or a link of the task names, one
+  already recorded, and one given as `replaced_by` of a tied card. A title or a task id written on a
+  card ties nothing;
+- `checked` is more than five minutes ahead, or older than the recorded reading of that card;
+- a replacement comes without `evidence`, or a card replaces itself;
+- a card has both `state` and `unreadable`, or neither.
+
+The write is its own operation (`qa_cards`): each reading joins what the file holds when it applies, so
+a journal replayed after another machine's change never replaces a newer reading with an older one. An
+older reading that arrives late with a replacement or a proof the card does not have is refused whole:
+whoever still waits is told, and a journaled change applied later is listed among the sync's
+conflicts, for someone to read the card again. A late older reading that states neither is dropped,
+also one that alone saw the card reopened: the next reading of the card says where it is. A failed read adds
+`failed_at` and `failure` beside the last state read, until a later successful read.
+
+A machine with an older Paseo Dash on the same plan keeps `qa_cards` in the files but does not read
+them: its own closing rule is not held by an unsettled card. Update every machine that closes cards.
+
+What each card says is left:
+
+| Card | Reads | Settled |
+| --- | --- | --- |
+| `proof` recorded | run proven | yes |
+| archived, `replaced_by` leading to a card | replaced; the replacement carries the QA | yes |
+| archived, no replacement, or only a loop | needs clarification | no |
+| open | current QA | no |
+| named as a replacement or tried, never read | not read | no |
+
+While a card is not settled: the Delivery read says it, also on a merged or done task (a done task
+reads `qa_unclear`, `ready_for_qa` or, with QA recorded as failed, `qa_failed`, not `accepted`); Needs you lists a card needing clarification,
+and any unsettled card of a done task; the closing rule holds the task. Nothing here changes a status,
+records a QA result (`delivery.qa` stays a person's) or starts, stops or restarts a run.
 
 #### App delivery
 

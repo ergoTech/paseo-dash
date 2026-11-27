@@ -10,11 +10,13 @@ import {
   PERSON_KEY_PATTERN,
   PLAN_STATUSES,
   type PlanStatus,
+  QA_CARDS_MAX,
   refId,
   RUN_TRANSITIONS,
   type Task,
   type TaskStatus,
   startable,
+  trelloShortLink,
 } from "../../shared/model.ts";
 import {
   addClarification,
@@ -32,6 +34,7 @@ import {
   writeHandoff,
 } from "../plan/document.ts";
 import { entityFileName } from "../plan/ids.ts";
+import { isOlder, lostStatement, mergeReadings, type QaReading } from "../qa-cards.ts";
 import { planHolds } from "../reconcile/plan-gate.ts";
 import { createRefusal, type DelegatedEdit, editRefusal, outsideRefusal, revisionOf, sameEdit, type Via } from "../delegation/rules.ts";
 import {
@@ -112,6 +115,11 @@ export type Operation =
   | { op_id: string; kind: "project"; key: string; value: ProjectFields | null; expect: ProjectFields | null; pin?: string }
   /** Puts space.yaml's projects (the map's lines) in this order; `expect` is the order it was made from. */
   | { op_id: string; kind: "project_order"; order: string[]; expect: string[] }
+  /**
+   * Readings of the task's QA cards (server/qa-cards.ts): each joins what the file has when the
+   * operation applies, so an older reading never replaces a newer one, whichever machine wrote it.
+   */
+  | { op_id: string; kind: "qa_cards"; id: string; readings: QaReading[] }
   /** Adds one label to a task, or removes it: two machines labelling one task both land (I2). */
   | { op_id: string; kind: "label"; id: string; label: string; add: boolean }
   /**
@@ -186,7 +194,7 @@ export type Outcome =
   | { status: "dropped"; reason: string };
 
 /** Fields that only dedicated operations may write. */
-const PROTECTED_FIELDS = new Set(["id", "type", "status", "created", "labels", "archived", "auto_closed"]);
+const PROTECTED_FIELDS = new Set(["id", "type", "status", "created", "labels", "archived", "auto_closed", "qa_cards"]);
 const PROTECTED_PREFIXES = ["run_", "progress_"];
 
 /**
@@ -580,6 +588,25 @@ function apply(ws: Workspace, plan: Plan, op: Operation, now: string): Outcome {
       if (!closed(task)) return { status: "refused", reason: `${op.id} is ${task.status}; only a done or canceled task is archived` };
       if (task.archived) return { status: "already" };
       return edit(ws, loaded, now, (document) => setField(document, "archived", op.at));
+    }
+
+    case "qa_cards": {
+      const loaded = ws.task(op.id);
+      if (!loaded) return { status: "refused", reason: `${op.id} is not a task` };
+      const recorded = loaded.entity.qa_cards ?? [];
+      const cardOf = (url: string) => recorded.find((card) => trelloShortLink(card.url) === trelloShortLink(url));
+      for (const reading of op.readings) {
+        const lost = lostStatement(cardOf(reading.url), reading);
+        if (lost) return { status: "refused", reason: `a newer reading of QA card ${trelloShortLink(reading.url)} of ${op.id} is recorded; the ${lost} read ${reading.checked} was not applied, nor anything else of that change: read the card again and record it` };
+      }
+      // Older than what is recorded, every one of them: nothing to say but that newer facts are there.
+      if (op.readings.every((reading) => isOlder(cardOf(reading.url), reading))) {
+        return { status: "dropped", reason: "a newer reading of these cards is recorded already" };
+      }
+      const merged = mergeReadings(recorded, op.readings);
+      if (JSON.stringify(merged) === JSON.stringify(recorded)) return { status: "already" };
+      if (merged.length > QA_CARDS_MAX && merged.length > recorded.length) return { status: "refused", reason: `${op.id} keeps at most ${QA_CARDS_MAX} QA cards` };
+      return edit(ws, loaded, now, (document) => setField(document, "qa_cards", merged));
     }
 
     case "label": {

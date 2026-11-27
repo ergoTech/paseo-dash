@@ -26,7 +26,7 @@ export const overviewInput = z.object({
  * left open is a `reconcile` group, cards that wait for the same thing together, each with the links to
  * what the decision rests on.
  */
-export const NEEDS_KINDS = ["permission", "question", "failed", "sync", "answer", "stopped", "checkout", "closed", "merged", "accept", "merge", "reconcile"] as const;
+export const NEEDS_KINDS = ["permission", "question", "failed", "sync", "answer", "stopped", "checkout", "closed", "merged", "accept", "qa", "merge", "reconcile"] as const;
 export type NeedsKind = (typeof NEEDS_KINDS)[number];
 
 /**

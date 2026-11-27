@@ -212,6 +212,87 @@ export const deliverySchema = z
   });
 export type Delivery = NonNullable<z.output<typeof deliverySchema>>;
 
+export const QA_CARD_STATES = ["open", "archived"] as const;
+/** QA cards one task keeps, the replaced ones with their history. */
+export const QA_CARDS_MAX = 12;
+
+/**
+ * The short link of a Trello card URL (`https://trello.com/c/<short>[/slug]`), which names the card
+ * whatever its title is; undefined for anything else.
+ */
+export function trelloShortLink(url: string): string | undefined {
+  return /^https:\/\/trello\.com\/c\/([A-Za-z0-9]+)(?:[/?#]\S*)?$/i.exec(url.trim())?.[1];
+}
+
+/**
+ * One QA card of a task as someone with Trello access last read it (03-model.md, QA cards). Paseo
+ * Dash reads no Trello itself: `checked` says when the state was read, and nothing here is a QA
+ * result. `replaced_by` is only what someone stated, with `evidence` saying where; `proof` says
+ * where the result of the card's run is recorded.
+ */
+export interface QaCard {
+  url: string;
+  /** Absent: named or tried, never read. */
+  state?: (typeof QA_CARD_STATES)[number];
+  checked?: string;
+  name?: string;
+  list?: string;
+  /** Who tests it next, as the card says. */
+  tester?: string;
+  replaced_by?: string[];
+  evidence?: string;
+  /** Replacements stated before the card was seen open again: history that settles nothing now. */
+  was_replaced_by?: string[];
+  proof?: string;
+  /** The newest read that could not be made, and why; the state above stays the last one read. */
+  failed_at?: string;
+  failure?: string;
+}
+
+/**
+ * Read leniently, as `delivery` is: an entry that names no Trello card is skipped, the first of a card
+ * wins. Absent with none, so a task without QA cards reads (and hashes) as it did before them.
+ */
+export const qaCardsSchema = z
+  .unknown()
+  .optional()
+  .transform((value): QaCard[] | undefined => {
+    const out: QaCard[] = [];
+    for (const item of Array.isArray(value) ? value : []) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const record = item as Record<string, unknown>;
+      const str = (key: string) => {
+        const v = record[key];
+        if (v instanceof Date) return v.toISOString();
+        return typeof v === "string" && v.trim() ? v.trim() : undefined;
+      };
+      const url = str("url");
+      const short = url ? trelloShortLink(url) : undefined;
+      if (!url || !short || out.some((card) => trelloShortLink(card.url) === short)) continue;
+      const cardUrls = (key: string) =>
+        (Array.isArray(record[key]) ? (record[key] as unknown[]) : [record[key]])
+          .filter((to): to is string => typeof to === "string" && trelloShortLink(to) !== undefined)
+          .map((to) => to.trim());
+      const replaced = cardUrls("replaced_by");
+      const earlier = cardUrls("was_replaced_by");
+      const card: QaCard = { url };
+      const state = QA_CARD_STATES.find((s) => s === str("state"));
+      if (state) card.state = state;
+      for (const key of ["checked", "name", "list", "tester"] as const) {
+        const v = str(key);
+        if (v) card[key] = v;
+      }
+      if (replaced.length) card.replaced_by = replaced;
+      if (earlier.length) card.was_replaced_by = earlier;
+      for (const key of ["evidence", "proof", "failed_at", "failure"] as const) {
+        const v = str(key);
+        if (v) card[key] = v;
+      }
+      out.push(card);
+    }
+    return out.length ? out : undefined;
+  });
+
 const common = {
   id: z.string().regex(ID_PATTERN),
   title: z.string().min(1),
@@ -313,6 +394,8 @@ export const taskSchema = z.object({
   readiness_note: text,
   /** From merged code to accepted work: stage build, flags, access, device, Trello card, QA. */
   delivery: deliverySchema,
+  /** The task's QA cards on Trello as last read; written only by the `qa_cards` operation. */
+  qa_cards: qaCardsSchema,
   auto_closed: autoClosedSchema,
 });
 

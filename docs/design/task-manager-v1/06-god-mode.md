@@ -1049,11 +1049,17 @@ time, two after errors, and a brief past 1,200 characters could not be read whol
   usage limit's hold. It starts nothing and moves nothing.
 - `delivery` says one task's way from its PR/MR to accepted work: each step's state and fact, the stage
   (`in_work`, `waiting_for_merge`, `waiting_for_ci`, `waiting_for_stage`, `waiting_for_setup`,
-  `ready_for_qa`, `qa_failed`, `qa_passed`, `accepted`), who acts next (agent, CI, deploy, owner, QA),
+  `ready_for_qa`, `qa_unclear`, `qa_failed`, `qa_passed`, `accepted`), who acts next (agent, CI, deploy, owner, QA),
   why Trello cannot be read from here, and a QA handoff text. `task.delivery` has its one line. For an
   app card the steps are Code, one `APK <variant>` each, QA and Google Play, four facts that never stand
   for one another (03-model.md, App delivery), and `app` carries the recorded variants, builds and
   publication for an editor. `update_task` records them (`variants`, `environment`, `builds`, `play`).
+- QA cards (03-model.md, QA cards): `update_task` `delivery.trello_cards` records cards as the caller
+  just read them with its own Trello access; the plugin calls no Trello. `delivery` then has one
+  `Trello <card>` step per card (state, when read, replacement and its evidence, proof, who is next),
+  the stage `qa_unclear` for an archived card nothing replaces, and `qa_cards` for the screen.
+  `overview.needs_you` has the kind `qa`: such a card, or a done task whose card is not settled, with
+  the card's link.
 - Needs you (`overview.needs_you`) has two more kinds for a reconciled project: `merge` is one list of
   every open PR/MR in the order to merge them (the card a PR/MR depends on first; those nothing holds
   back before those something does), each with `ready` and its own `blockers` (CI, review, whether the

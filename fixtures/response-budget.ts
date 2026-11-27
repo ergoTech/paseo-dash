@@ -6,7 +6,7 @@ import { RESPONSES, type ResponseName, type ResponseSizes } from "./response-siz
  * shrinks a reply lowers its number, or the room it freed can fill up again unnoticed.
  */
 export const MEASURED: ResponseSizes = {
-  "meta.describe": 23108,
+  "meta.describe": 23633,
   overview: 5837,
   tasks: 4906,
   tasks_query: 6895,
@@ -24,16 +24,18 @@ export const CEILING: Partial<Record<ResponseName, number>> = { plan_tools: 1024
 export const ROOM = 1.05;
 
 /**
- * meta.describe stays within 23 KiB whatever the room says: God Mode reads it for every call and
+ * meta.describe stays within 23.5 KiB whatever the room says: God Mode reads it for every call and
  * shows ChatGPT each operation's arguments with every read. 16 KiB from JOBBY-NY4D4; raised by the
  * user for resume_task and its read-back (JOBBY-TGHP0), then for the reads and the batch action of
  * JOBBY-YV2QS (task_text, delivery, reconcile, start_candidates, tasks_profiles, update_tasks) and
  * update_task's requires, readiness_note and delivery. Raised from 21.5 KiB for the ready_review
  * read (JOBBY-8DW17), in the pull request that adds it. Raised from 22 KiB for the app facts
  * update_task records (variants, environment, builds, play) and the two lines overview and reconcile
- * say about the new Needs you items (JOBBY-G2SEY), in the pull request that adds them.
+ * say about the new Needs you items (JOBBY-G2SEY), in the pull request that adds them. Raised from
+ * 23 KiB for the QA card readings update_task records (delivery trello_cards, JOBBY-8HV1M), in the
+ * pull request that adds them.
  */
-export const DESCRIBE_CEILING = 23 * 1024;
+export const DESCRIBE_CEILING = 23.5 * 1024;
 
 export const budgetOf = (name: ResponseName): number => {
   const budget = Math.ceil(MEASURED[name] * ROOM);

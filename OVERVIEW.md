@@ -23,6 +23,8 @@ Settings → Automatic closing switches a project, on this machine only, to Off 
 
 For an app card, a merge, an installable staging build, QA's result and the Google Play state are four separate facts. One build covers every card whose merge commit it holds when it is on the target branch and its variant and environment match; the watch build is separate. A build being available marks no test passed.
 
+A task's QA cards on Trello can be recorded as someone with Trello access reads them (Paseo Dash itself reads and moves nothing there): open or archived, who tests next, a stated replacement with where it is said, where a run's result is recorded. The task's Delivery shows each with the time it was read; an older or failed reading replaces nothing. A card archived with no known replacement, and a done task whose card is still open, appear in Needs you. No reading closes a task, passes QA or starts an agent.
+
 ## Setup
 
 - Paseo 0.13 or newer. Built and tested on macOS.
