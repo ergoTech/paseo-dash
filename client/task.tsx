@@ -144,6 +144,7 @@ export function TaskDetail({
             {t.run?.workspaceId && navigation && !inWorkspace ? <Button label="Open workspace" ghost onPress={() => navigation.openWorkspace({ workspaceId: t.run!.workspaceId })} styles={styles} /> : null}
             {t.feature ? <Button label="Feature" ghost onPress={() => show.feature(t.feature!.id, t.feature!.title)} styles={styles} /> : null}
           </View>
+          <Chats view={t} navigation={navigation} styles={styles} />
           <TaskActions view={t} action={action} onCover={setCovered} onOpenTask={(task) => show.task(task)} styles={styles} theme={theme} />
           {t.run ? (
             <Section title="Run" styles={styles}>
@@ -260,6 +261,28 @@ export function TaskDetail({
 }
 
 type TaskView = RpcOutput<typeof taskViewRpc>;
+
+/** The sub-agents of a stopped run, and work on this task in another run's chat (shared/chats.ts). */
+function Chats({ view, navigation, styles }: { view: TaskView; navigation: PluginScreenProps["navigation"]; styles: ReturnType<typeof useStyles> }) {
+  const rows = [
+    ...view.sub_agents.map((sub) => ({ id: sub.id, text: `Sub-agent ${sub.id.slice(0, 8)} of this run: ${sub.state.replace("_", " ")}`, directory: sub.directory })),
+    ...view.other_chats.map((chat) => ({ id: chat.chat_id, text: `Work in another run's chat: ${chat.chat_id.slice(0, 8)} of ${chat.via_task}'s run, ${chat.state.replace("_", " ")}`, directory: chat.directory })),
+  ];
+  if (!rows.length) return null;
+  return (
+    <Section title="Other chats" styles={styles}>
+      {rows.map((row) => (
+        <View key={row.id} style={styles.row}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.text}>{row.text}</Text>
+            {row.directory ? <Text style={styles.muted} numberOfLines={1}>{row.directory}</Text> : null}
+          </View>
+          {navigation ? <Button label="Open chat" ghost onPress={() => navigation.openAgent({ agentId: row.id })} styles={styles} /> : null}
+        </View>
+      ))}
+    </Section>
+  );
+}
 type Dialog =
   | { kind: "start" }
   | { kind: "release"; to: ReleaseTo }

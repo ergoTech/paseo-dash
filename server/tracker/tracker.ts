@@ -30,6 +30,8 @@ export interface TrackerOptions {
   onWorkspaceArchived?: (run: RunRecord) => void;
   /** Called for each live tracked run on a trunk in a reconcile pass: its workspace may be archived meanwhile. */
   onReconcileTrunk?: (run: RunRecord) => void;
+  /** Called after a run's agent closed or was archived, outside the hook: its chat is read again. */
+  onChatChanged?: (run: RunRecord) => void;
   /** A run of this machine whose task the plan no longer holds for it (released, finished, taken over). */
   onRunOver?: (run: RunRecord) => Promise<void> | void;
   now?: () => Date;
@@ -205,8 +207,8 @@ export class Tracker {
           }, 0);
         }),
       ),
-      onHook(server, "agent.closed", hook((run) => this.hooked(run, "stopped"))),
-      onHook(server, "agent.archived", hook((run) => this.hooked(run, "stopped"))),
+      onHook(server, "agent.closed", hook((run) => this.closed(run))),
+      onHook(server, "agent.archived", hook((run) => this.closed(run))),
       onHook(server, "workspace.archived", (event, context) => {
         this.options.attach(context.paseo);
         for (const run of this.options.runs()?.runs.values() ?? []) {
@@ -224,8 +226,30 @@ export class Tracker {
     ];
   }
 
+  /** The run's agent closed or was archived: `stopped`, and what became of its chat is read. */
+  private closed(run: RunRecord): void {
+    this.hooked(run, "stopped");
+    setTimeout(() => this.options.onChatChanged?.(run), 0);
+  }
+
   private log(message: string): void {
     this.options.log?.(message);
+  }
+
+  /**
+   * A run recorded as stopped whose agent Paseo shows open again (a chat continued while a hook was
+   * missed): its activity follows the agent's snapshot again. Only the snapshot is read here, since a
+   * timeline read loads a stored agent; the reply is read by the next reconcile pass.
+   */
+  async revive(run: RunRecord): Promise<void> {
+    const paseo = this.options.paseo();
+    if (!paseo || !run.agentId || run.activity !== "stopped") return;
+    const seen = this.hookCount.get(run.run_id) ?? 0;
+    const refreshed = await paseo.agents.ref(run.agentId).refresh();
+    if (!refreshed || (this.hookCount.get(run.run_id) ?? 0) !== seen || run.activity !== "stopped") return;
+    const next = activityOf(refreshed.agent as AgentSnapshot);
+    if (next.activity === "stopped") return;
+    this.set(run, next.activity, { waitingFor: next.waitingFor, waitingKind: next.waitingKind, ...(next.error ? { error: next.error } : {}) });
   }
 
   /**
@@ -261,7 +285,7 @@ export class Tracker {
 
   /**
    * Activity from each tracked agent's own snapshot: catches every hook missed while the plugin was
-   * reloading or the daemon restarting. A run whose agent is gone is stopped.
+   * reloading or the daemon restarting. A run whose agent is closed, archived or gone is stopped.
    */
   async reconcile(): Promise<void> {
     const paseo = this.options.paseo();

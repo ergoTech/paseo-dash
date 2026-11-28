@@ -4,7 +4,7 @@ import { MAX_RUNNING_CAP } from "../shared/ui.ts";
 import type { Dashboard } from "./dashboard.ts";
 import { readJsonFile, writeJsonFile } from "./json-file.ts";
 import { planStart } from "./api/reads.ts";
-import { isHumanWorkRefusal, sortTasks, taskSection } from "./api/view.ts";
+import { isHumanWorkRefusal, localRun, sortTasks, taskSection } from "./api/view.ts";
 import { agentHold, agentHoldOf } from "./api/start-verdict.ts";
 import { startTask, type StartRequest, type WriteContext } from "./api/writes.ts";
 import type { Plan } from "./plan/load.ts";
@@ -407,7 +407,9 @@ export class Autopilot {
       const busy = tasks.find(hasLiveRun);
       if (busy) {
         const idle = busy.status === "in_progress" && runActivity(this.dashboard, busy) === "stopped";
-        this.waits.set(key, idle ? `waits: ${busy.id} «${busy.title}» holds this project with no agent at work: release it (to done when finished) to go on` : `waits: ${busy.id} «${busy.title}» runs in this project`);
+        // A closed chat can be continued: that is said before the release.
+        const step = this.dashboard.chats.of(localRun(this.dashboard.runs, busy))?.state === "closed" ? "continue its closed chat, or release it" : "release it";
+        this.waits.set(key, idle ? `waits: ${busy.id} «${busy.title}» holds this project with no agent at work: ${step} (to done when finished) to go on` : `waits: ${busy.id} «${busy.title}» runs in this project`);
         continue;
       }
       const ready = sortTasks(tasks.map((task) => ({ plan, task }))).map(({ task }) => task).filter((t) => taskSection(plan, t) === "ready");

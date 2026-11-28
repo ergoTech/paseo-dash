@@ -531,11 +531,14 @@ runs it. Each list holds at most ten entries unless `limit` asks otherwise (the 
 ```ts
 input:  { space?: string; limit?: number }   // limit: 1-200 per list, default 10
 output: {
-  needs_you:  { task: string; title: string; why: string; kind: NeedsKind; next: string; chat_id: string; space: string; since: string }[];  // most urgent kind first, then the longest waiting where known; since: ISO or ""
-  // NeedsKind: "permission" | "question" | "failed" | "sync" | "answer" | "stopped" | "checkout" | "closed" | "merged" | "accept"
+  needs_you:  { task: string; title: string; why: string; kind: NeedsKind; next: string; chat_id: string; space: string; since: string;
+                 chat?: RunChat }[];  // most urgent kind first, then the longest waiting where known; since: ISO or ""
+  // RunChat, for a stopped run once read: { id: string; state: "closed" | "archived" | "gone";
+  //   sub_agents: { id: string; state: "needs_input" | "working" | "idle" | "failed" | "closed"; directory: string }[] }
+  // NeedsKind: "permission" | "question" | "failed" | "sync" | "answer" | "subagent" | "stopped" | "checkout" | "closed" | "merged" | "accept"
   // next: what the user can do now, one line ("release it: to done if it is finished, to todo to start it again")
   running:    { task: string; title: string; activity: "launching" | "working" | "waiting" | "failed" | "stopped"; host: string; chat_id: string; since: string }[];  // waiting, failed first, then the longest running, stopped last; since: run_started
-  // stopped: no agent of this Mac at work on it (gone, or none known here); another machine's run: working
+  // stopped: no agent of this Mac at work on it (closed, archived, gone, or none known here); another machine's run: working
   review:     { task: string; title: string; pr: string; since: string }[];        // the longest in review first; since: run_review_at (when not older than run_started), else run_started
   counts:     { needs_you: number; running: number; review: number; inbox: number; events: number };   // events: unread task events
   milestones: { id: string; title: string; due: string; done: number; total: number; blocked: number }[];
@@ -551,8 +554,10 @@ most 160 characters: an agent's permission request (`permission`), its questions
 `read_approval` and `answer_questions`, never `answer_approval`'s allow), a failed agent (`failed`), a
 space's plan changes that cannot be pushed (`sync`; `task` is empty and `title` is the space's
 name; a failed fetch alone heals on the next tick and is not listed), an agent that finished its
-turn while the task is in progress (`answer`, its last message, often a question), an agent gone
-while it is (`stopped`; also a run this Mac holds in the plan with no record of its agent here), a
+turn while the task is in progress (`answer`, its last message, often a question), a run whose agent
+is stopped while it is and a sub-agent of it is still open (`subagent`, `chat_id` is that
+sub-agent's), a run whose agent is stopped otherwise (`stopped`: `why` says whether its chat is
+closed, archived or gone; also a run this Mac holds in the plan with no record of its agent here), a
 tracked checkout on the trunk with no agent at work (`checkout`: its agent's end is the normal one,
 not a failure, but no PR/MR moves the task, so only the user does; `why` says whether its work
 landed on `origin/<trunk>`), a run's PR/MR closed without a merge while no agent works on it (`closed`), merged without the task
@@ -598,7 +603,9 @@ output: {
            blocked?: true;
            blocked_by?: string;      // what it waits for, as `task` says it
            matched_in?: string;      // with a query: the field the match is in
-           quote?: string }[];       // with a query: a short piece of that field around the match
+           quote?: string;           // with a query: a short piece of that field around the match
+           chat?: RunChat;           // a stopped run's chat, as needs_you says it
+           other_chats?: OtherChat[] }[];  // work in another run's chat, as `task` says it
   total: number; shown: number; error: string;   // error with mine: no person has this Mac's git email
 }
 ```
@@ -666,7 +673,11 @@ output: {
   blocked_by: string;          // "LAC-5RT2M «TOTP contract» (in_progress)" or ""
   pr: string;                  // the live run's PR/MR as the tracker last saw it: "!412 open", "#7 merged — <why nothing moved>";
                                // otherwise the run's PR/MR link, or "". No checks or review: those are task_result
-  chat_id: string;             // "" when no agent on this machine
+  chat_id: string;             // "" when no agent on this machine, or it is gone
+  chat?: RunChat;              // a stopped run's chat and its unarchived sub-agents, once read
+  other_chats?: {              // sub-agents of other tasks' runs naming this task; never for done or canceled
+    chat_id: string; state: "needs_input" | "working" | "idle" | "failed" | "closed" | "archived"; directory: string;
+    via_task: string }[];      // the task whose run started it
   project: string; feature: string; milestone: string; priority: string; assignee: string;
   labels: string[];
   issue: string;               // the GitHub/GitLab issue it stands for (web URL), or ""
@@ -937,7 +948,8 @@ place. Three facts stay apart:
 - the **run** that holds it, the plan's claim: it holds the task, its project for a project flag,
   and a place under the autopilot's limit, until it ends or a person releases it;
 - the **agent** this Mac knows for that run: launching, working, waiting, failed, or none at work
-  (`stopped`: gone, never had one, or a run this Mac holds with no record of its agent). A start
+  (`stopped`: closed, archived, gone, never had one, or a run this Mac holds with no record of its
+  agent). A start
   whose claim is still being pushed has no record yet either: the plan in memory holds the claim
   first, and the start writes its record once the claim is won, so a claim of this Mac still in the
   space's journal reads `launching` ("launching on this Mac"), not `stopped`.
@@ -956,7 +968,7 @@ and `task`. The invariant, tested over the same runs read through all five (serv
    `closed`. Another machine's agent is its own to tell.
 4. `failed` is said only of an agent that failed, by every read or by none (`overview.running` lists
    tasks in progress only, so a task in review whose agent failed is `failed` in the other reads). An
-   agent gone, a tracked trunk checkout's end included, is `stopped` and makes no task event.
+   agent that is stopped, a tracked trunk checkout's end included, is `stopped` and makes no task event.
 5. `counts` are the lists' totals, `spaces[].needs_you` adds up to `counts.needs_you`, and
    `counts.events` is the unread `events`.
 6. The autopilot's `running` is its `runs`: every run of this Mac's runs.json the plan holds, in
@@ -971,15 +983,20 @@ The steps (`next`), per kind:
 | `failed` | read the error in the agent's chat; tell it to go on there, or release the task (to todo to start it again) |
 | `sync` | fix the plan repository's access on this Mac; the changes then push by themselves |
 | `answer` | reply in the agent's chat; if the work is finished, release the task to done |
-| `stopped` | check its branch and PR/MR for the work, then release it: to done if it is finished, to todo to start it again |
+| `subagent` | check the sub-agent's chat; with the run's chat closed, continue it next; release only after that |
+| `stopped`, chat closed | continue its chat (open it in Paseo, or `send_message`); otherwise release it: to done if it is finished, to todo to start it again |
+| `stopped`, chat archived or gone | check its branch and PR/MR for the work, then release it: to done if it is finished, to todo to start it again |
+| `stopped`, chat not read | check its chat in Paseo and continue it if it is there; otherwise release it |
 | `checkout` | by the landed reading: its work is on `origin/<trunk>`, release it to done if it is finished; or commit and push it first; or check that it reached `origin/<trunk>`. Each: or release it to todo to start it again; "its workspace is still open in Paseo" while it is |
 | `closed` | reopen it or tell the agent; or release the task (to todo to start it again, or to canceled) |
 | `merged` | in review: accept the work if it is finished, otherwise send it back with what is left; in progress: release it to done if the work is finished, otherwise tell the agent what is left |
 | `accept` | accept the work, or send it back with what to change (`accept_task`, `send_back`) |
 
-Sending back reaches only this Mac's agent while it is there and waits (`send_back` refuses
-otherwise), so that half of the step follows the run: "once its agent waits" while it works, "from
-<host>" for another machine's run, and "release it to todo to start it again" with no agent at work.
+Sending back reaches only this Mac's agent while its chat is there and not working (`send_back`
+refuses a working, archived or gone one), so that half of the step follows the run: "once its agent
+waits" while it works, "from <host>" for another machine's run, "continue its closed chat …, or
+release it to todo" with a closed chat, and "release it to todo to start it again" with no chat to
+continue.
 
 A task in progress with no agent at work is shown with its step, not hidden. For a tracked trunk
 checkout that is a change: its end was left out of `needs_you` as its normal end, so nothing said
@@ -1004,7 +1021,8 @@ alone waiting for the user. `overview.running[].state` and `task.state` say what
 | `needs_user_question`, `approval` | yes (`question`, `permission`) | the agent's own question or permission, else a child agent's (`chat_id` is the child's) |
 | `answer` | yes | idle with none of the above: the agent finished its turn; `waiting_for: user` says it asks |
 | `blocked` | yes (`answer`) | `task_report state: blocked` |
-| `failed`, `stopped`, `checkout` | yes | as before; `stopped` now says its PR/MR, handoff and open acceptance |
+| `failed`, `stopped`, `checkout` | yes | as before; `stopped` says its chat's state, PR/MR, handoff and open acceptance |
+| `subagent_open` | yes (`subagent`; in review, what its PR/MR or result asks) | the run's agent is stopped and a sub-agent of it is open ([Stopped runs and their chats](#stopped-runs-and-their-chats)) |
 | `record_lost` | yes (`stopped`) | this Mac holds the run in the plan with no record of its agent: not an ended run |
 | `elsewhere` | no | another machine's run |
 
@@ -1012,6 +1030,35 @@ A sub-agent at work never hides a question or a permission, the agent's own or a
 wait no fact backs counts for 30 minutes; checks that finished contradict a reported CI wait. A turn
 that ended while a sub-agent works makes no unread event. Nothing closes, restarts or releases a run
 by itself.
+
+### Stopped runs and their chats
+
+Decided 2026-11-28 (JOBBY-HCXY5). Needs you listed cards as "its agent is gone" although most of
+their chats were closed, not archived, and could be continued with their context; some were archived;
+some had sub-agents of their own; and work of a card without a run could sit in a sub-agent's chat of
+another card's run. A `stopped` activity says only that this Mac's agent is not at work.
+`server/chats.ts` reads the rest from Paseo, with reads that load and resume nothing:
+
+- **The run's chat**, for each live run of this Mac whose agent is stopped: `closed` (not archived: a
+  message continues it), `archived`, or `gone`. `gone` is said only when Paseo answers that it has no
+  such agent. While nothing is read, or the read failed, the reads say the chat is not read yet.
+- **Its sub-agents that are not archived** (direct children by `paseo.parent-agent-id`): id, state
+  (`needs_input`, `working`, `idle`, `failed`, `closed`) and directory, five at most, open ones
+  first. Only an open one (not `closed`) makes the need `subagent`; closed ones are named in `why`.
+  One that asks is the user's question or permission, as for a running agent.
+- **Work in another run's chat**: a sub-agent (up to five parents above it) of a run of this Mac whose
+  title or labels name another task's id, archived ones included (`state: "archived"`). It shows on
+  that task with the run's task (`via_task`), until the task is done or canceled.
+
+`overview.needs_you[].chat`, `tasks.list` rows and `task` carry `chat`
+(`{ id, state, sub_agents }`) for a stopped run; rows and `task` carry `other_chats`. `chat_id` is
+empty when the agent is gone. A run recorded as stopped whose agent Paseo shows open again (a chat
+continued while a hook was missed) follows that agent's state again. Nothing else changes: no chat is
+restored, no task moved, no run released.
+
+The listing is read before an `overview`, `tasks`, `task`, board or task screen answer when a stopped
+run's chat is not known (at most five seconds), when a run's agent closes or is archived, on the
+tracker's reconcile pass, and in the background while a screen is open.
 
 ### Batches and full text
 

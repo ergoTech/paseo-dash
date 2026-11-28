@@ -190,6 +190,7 @@ export default function contribute(server: PluginServerContext) {
     await dashboard.start();
     // Screens read the overview, and the changes token is polled: while one is open, PRs/MRs are checked at most once a minute.
     dashboard.peekPrs();
+    await dashboard.chats.ready();
     return readOverview(dashboard, input);
   });
 
@@ -208,22 +209,30 @@ export default function contribute(server: PluginServerContext) {
     await dashboard.start();
     return fn(input);
   };
-  server.handle(tasksListRpc, started((input) => listTasks(ctx, input)));
-  server.handle(tasksGetRpc, started((input) => getTaskWithRuns(ctx, input)));
+  // Reads that say what became of a stopped run's chat wait for it to be read (server/chats.ts); one
+  // that also waits for the forge or asks the providers waits less, to answer inside Paseo's 30 s.
+  const SHORT_WAIT_MS = 2_000;
+  const withChats = <I, O>(fn: (input: I) => O | Promise<O>, waitMs?: number) =>
+    started(async (input: I) => {
+      await dashboard.chats.ready(waitMs);
+      return fn(input);
+    });
+  server.handle(tasksListRpc, withChats((input) => listTasks(ctx, input)));
+  server.handle(tasksGetRpc, withChats((input) => getTaskWithRuns(ctx, input)));
   server.handle(roadmapRpc, started((input) => readRoadmap(ctx, input)));
   server.handle(inboxListRpc, started((input) => listInbox(ctx, input)));
-  server.handle(startCheckRpc, started((input) => startCheck(ctx, input)));
+  server.handle(startCheckRpc, withChats((input) => startCheck(ctx, input), SHORT_WAIT_MS));
   server.handle(releaseCheckRpc, started((input) => releaseCheck(ctx, input)));
   // A PR/MR's checks and review from gh / glab (server/result.ts), the task screen's read for God Mode.
-  server.handle(tasksResultRpc, started((input) => taskChecks(ctx, input)));
-  server.handle(reconcileRpc, started((input) => reconcile(ctx, input)));
+  server.handle(tasksResultRpc, withChats((input) => taskChecks(ctx, input)));
+  server.handle(reconcileRpc, withChats((input) => reconcile(ctx, input), SHORT_WAIT_MS));
   server.handle(tasksProfilesRpc, started((input) => readProfiles(ctx, input)));
   server.handle(updateTasksCheckRpc, started((input) => updateTasksCheck(ctx, input)));
   server.handle(updateTasksRpc, started((input) => updateTasks(ctx, input)));
   server.handle(taskTextRpc, started((input) => readTaskText(ctx, input)));
   server.handle(startCandidatesRpc, started((input) => startCandidates(ctx, input)));
-  server.handle(readyReviewRpc, started((input) => readyReview(ctx, input)));
-  server.handle(tasksDeliveryRpc, started((input) => taskDelivery(ctx, input)));
+  server.handle(readyReviewRpc, withChats((input) => readyReview(ctx, input), SHORT_WAIT_MS));
+  server.handle(tasksDeliveryRpc, withChats((input) => taskDelivery(ctx, input)));
   // The read-back of accepting a task's work: who holds it and its PR/MR's checks and review.
   server.handle(acceptCheckRpc, started((input) => acceptCheck(ctx, input)));
   server.handle(inboxAddRpc, started((input) => addToInbox(ctx, input)));
@@ -246,15 +255,15 @@ export default function contribute(server: PluginServerContext) {
   // The metro map for the dashboard screens (not described to God Mode: it reads roadmap instead).
   server.handle(mapRpc, started((input) => readMap(dashboard, input)));
   // The board's columns (shared/board.ts), also only on the dashboard's screens.
-  server.handle(uiBoardRpc, started((input) => readBoard(ctx, input)));
+  server.handle(uiBoardRpc, withChats((input) => readBoard(ctx, input)));
   server.handle(activityRpc, started((input) => listActivity(dashboard, input)));
   server.handle(activityTrackRpc, started((input) => trackWorkspace(ctx, input)));
-  server.handle(taskViewRpc, started((input) => taskView(dashboard, input)));
+  server.handle(taskViewRpc, withChats((input) => taskView(dashboard, input)));
   server.handle(taskRunsRpc, started((input) => taskRuns(dashboard, input)));
   server.handle(taskCodeMapRpc, started((input) => taskCodeMap(dashboard, input)));
   server.handle(featureViewRpc, started((input) => featureView(dashboard, input)));
   // Actions only the dashboard's screens offer (shared/ui.ts), also not described to God Mode.
-  server.handle(uiStartCheckRpc, started((input) => uiStartCheck(ctx, input)));
+  server.handle(uiStartCheckRpc, withChats((input) => uiStartCheck(ctx, input), SHORT_WAIT_MS));
   server.handle(uiTasksCreateRpc, started((input) => createTask(ctx, input, "dashboard")));
   server.handle(
     uiStartRpc,
@@ -278,7 +287,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uiOptionsRpc, started((input) => planOptions(dashboard, input)));
   server.handle(uiRunsRpc, started(() => liveRuns(dashboard)));
   server.handle(uiRoadmapRpc, started((input) => roadmapText(dashboard, input)));
-  server.handle(uiTaskResultRpc, started((input) => taskResult(ctx, input)));
+  server.handle(uiTaskResultRpc, withChats((input) => taskResult(ctx, input)));
   server.handle(uiPrefsRpc, started(() => readPrefs(dashboard)));
   server.handle(uiPrefsSetRpc, started((input) => writePrefs(dashboard, input)));
   server.handle(uiRecentRpc, started(() => readRecent(dashboard)));

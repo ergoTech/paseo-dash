@@ -169,7 +169,7 @@ export class FakePaseo {
         await fake.options.beforeAgentRefresh?.();
         const a = fake.agents.get(id);
         if (!a || a.gone) return null;
-        return { agent: { id, cwd: "/", status: a.status, pendingPermissions: a.pendingPermissions, lastError: a.lastError, archivedAt: a.archivedAt }, project: null };
+        return { agent: { id, cwd: a.cwd ?? "/", status: a.status, pendingPermissions: a.pendingPermissions, lastError: a.lastError, archivedAt: a.archivedAt }, project: null };
       },
       send: async (text: string) => {
         if (!fake.agents.has(id)) throw new Error(`agent ${id} not found`);
@@ -315,10 +315,11 @@ export class FakePaseo {
         }),
       },
       agents: {
-        list: async (options: { filter?: { labels?: Record<string, string> } } = {}) => {
+        list: async (options: { filter?: { labels?: Record<string, string>; includeArchived?: boolean } } = {}) => {
           const wanted = options.filter?.labels ?? {};
           const entries = [...fake.agents.values()]
-            .filter((a) => Object.entries(wanted).every(([k, v]) => a.labels[k] === v))
+            // As the daemon lists them: closed agents too, archived ones only when asked.
+            .filter((a) => !a.gone && (options.filter?.includeArchived || !a.archivedAt) && Object.entries(wanted).every(([k, v]) => a.labels[k] === v))
             .map((a) => ({ agent: { id: a.id, workspaceId: a.workspaceId, labels: a.labels, archivedAt: a.archivedAt, status: a.status, pendingPermissions: a.pendingPermissions, cwd: a.cwd, provider: a.provider, title: a.title, currentModeId: a.currentModeId } }));
           return { requestId: "r", entries, pageInfo: {} };
         },

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### A stopped run says what became of its chat
+
+- "Its agent is gone" is said only when Paseo has no such agent. A stopped run now says whether its
+  chat is closed (it can be continued), archived or gone, on Needs you, in `tasks`, `task` and the
+  task screen; for a closed chat the next step is to continue it, and releasing the task comes second.
+- A stopped run with a sub-agent still open is listed as `subagent`, with the sub-agent's id, state,
+  directory and a link to its chat; a sub-agent's question is the user's also then.
+  A closed sub-agent that is not archived is listed and named too.
+- A task named in the title or labels of another run's sub-agent shows that chat, archived or not, as
+  work in another run's chat.
+- `send_back` tells an archived chat apart from a gone agent.
+
 ### Merged work of a run whose agent is gone
 
 - A task in progress or in review whose agent is gone on this Mac no longer reads as "no PR/MR": its

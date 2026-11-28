@@ -473,7 +473,7 @@ function rootRow(ctx: ReadContext, facts: SpaceFacts, root: Root, card: () => Ca
   }
   let next: string;
   if (task.status === "review") next = reviewNext(task);
-  else if (hasLiveRun(task)) next = `under way, ${activityText(task, ctx.host, localRun(ctx.dashboard.runs, task)) || "run held"}: follow it (task); the cards wait until it is done`;
+  else if (hasLiveRun(task)) next = `under way, ${activityText(task, ctx.host, localRun(ctx.dashboard.runs, task), false, ctx.dashboard.chats.of(localRun(ctx.dashboard.runs, task))) || "run held"}: follow it (task); the cards wait until it is done`;
   else if (task.status === "inbox") next = "an inbox draft: the user accepts it first (update_task status todo)";
   else next = card().next;
   return { ...base, title: task.title, status: task.status, project: task.project ?? "", next: cut(next, 400) };

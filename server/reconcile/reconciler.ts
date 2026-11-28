@@ -1,3 +1,4 @@
+import type { ChatState } from "../../shared/chats.ts";
 import { closed, hasLiveRun, type Task } from "../../shared/model.ts";
 import { localHost, localRun, plannedBranch } from "../api/view.ts";
 import type { SpaceEntry } from "../api/resolve.ts";
@@ -44,6 +45,8 @@ export interface ReconcilerOptions {
   forge: ForgeCli;
   git: GitRunner;
   runs: () => RunStore | undefined;
+  /** What became of the chat of a task's stopped run, once read (server/chats.ts). */
+  chat?: (task: Task) => ChatState | undefined;
   /** What the run's tracker last saw of a card's PR/MR. */
   seen: (taskId: string) => PrView | undefined;
   /** The PR/MRs the forge says closed the card's issue, as last read here. */
@@ -246,7 +249,8 @@ export class Reconciler {
     const runs = this.options.runs();
     const run = runs ? localRun(runs, task) : undefined;
     if (!run) return task.run_host === this.host ? "gone" : "elsewhere";
-    if (run.activity === "stopped" || run.activity === "failed") return "gone";
+    if (run.activity === "failed") return "failed";
+    if (run.activity === "stopped") return "gone";
     return run.activity === "waiting" || run.activity === "needs_input" ? "waiting" : "working";
   }
 
@@ -257,7 +261,7 @@ export class Reconciler {
     if (!loaded || task?.type !== "task") return undefined;
     const rule = this.rule(space, task);
     if (!rule) return undefined;
-    return judge({ plan, task, loaded, rule, facts: this[read](space, task), asRun, agent: this.agentOf(task), host: this.host });
+    return judge({ plan, task, loaded, rule, facts: this[read](space, task), asRun, agent: this.agentOf(task), chat: this.options.chat?.(task), host: this.host });
   }
 
   /**

@@ -82,6 +82,8 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
     instructions_hash: "",
     merged: [],
     wait: null,
+    sub_agents: [],
+    other_chats: [],
     requires: [],
     readiness: "",
     hold: "",
@@ -166,8 +168,8 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
           since: spokenTime(task.run_started, now),
           branch: task.run_branch ?? "",
           local: Boolean(run),
-          activity: activityText(task, undefined, run, claiming(dashboard, task)),
-          agentId: run?.agentId ?? "",
+          activity: activityText(task, undefined, run, claiming(dashboard, task), dashboard.chats.of(run)),
+          agentId: dashboard.chats.of(run)?.state === "gone" ? "" : (run?.agentId ?? ""),
           workspaceId: run?.workspaceId ?? "",
           lastMessage: run?.lastMessage ?? "",
           settings: run ? runSettingsText(run) : "",
@@ -190,6 +192,8 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
     instructions_hash: hashText(taskInstructions(loaded.brief, loaded.acceptance.map((a) => a.text), loaded.handoff?.text, loaded.clarifications)),
     merged: dashboard.owner ? dashboard.merged.peekTask({ sync: entry.sync, mapping: entry.record.mapping }, task) : [],
     wait: live ? { ...waitState(dashboard, task), ...(gone && (goneMerged.length || gone.pending.length) ? { next: gone.next } : {}) } : null,
+    sub_agents: dashboard.chats.of(run)?.sub_agents ?? [],
+    other_chats: closed(task) ? [] : dashboard.chats.naming(task.id),
     requires: task.requires.map(requirementText),
     readiness: task.readiness_checked ? `${task.readiness_checked.slice(0, 10)}: ${task.readiness_note ?? "checked"}` : "",
     hold: startable(task) ? agentHold(dashboard, plan, task) : "",
@@ -297,7 +301,7 @@ export function featureView(dashboard: Dashboard, input: RpcInput<typeof feature
       .map((d) => plan.entities.get(d)?.entity as Task)
       .filter((d) => d.status !== "done")
       .map((d) => d.project ?? d.id);
-    const note = waits.length ? `waits for ${[...new Set(waits)].join(", ")}` : [progressText(task, plan.entities.get(task.id)!.acceptance), activityText(task, undefined, run, claiming(dashboard, task))].filter(Boolean).join(" · ");
+    const note = waits.length ? `waits for ${[...new Set(waits)].join(", ")}` : [progressText(task, plan.entities.get(task.id)!.acceptance), activityText(task, undefined, run, claiming(dashboard, task), dashboard.chats.of(run))].filter(Boolean).join(" · ");
     (phases[index] ??= []).push({
       id: task.id,
       title: task.title,

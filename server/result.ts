@@ -189,7 +189,8 @@ export async function sendBack(ctx: WriteContext, paseo: PaseoApi, input: RpcInp
   if (!run?.agentId) return fail(`${name} runs on ${task.run_host ?? "another machine"}; send it there.`, task.status);
   const agent = paseo.agents.ref(run.agentId);
   const snapshot = await agent.refresh();
-  if (!snapshot || snapshot.agent.archivedAt) return fail(`The agent of ${name} is gone; start the task again or release it.`, task.status);
+  if (!snapshot) return fail(`The agent of ${name} is gone; start the task again or release it.`, task.status);
+  if (snapshot.agent.archivedAt) return fail(`The chat of ${name} is archived; restore it in Paseo, or release the task to start it again.`, task.status);
   // A message to a working agent would be mixed into its turn; it is sent once the agent waits.
   if (snapshot.agent.status === "running" || snapshot.agent.status === "initializing") return fail(`The agent of ${name} is still working; send it once it waits, or write in its chat.`, task.status);
   // A reply goes as the person wrote it, like a message in the agent's chat.

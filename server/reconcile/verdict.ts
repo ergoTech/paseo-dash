@@ -1,3 +1,4 @@
+import { type ChatState, chatSaid } from "../../shared/chats.ts";
 import { hasLiveRun, type Task } from "../../shared/model.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import type { Closure } from "../sync/ops.ts";
@@ -35,7 +36,9 @@ export interface JudgeInput {
   /** The card's own live run is the one that would end (its PR/MR merged). */
   asRun?: boolean;
   /** What this Mac knows of the live run's agent. */
-  agent?: "working" | "gone" | "waiting" | "elsewhere";
+  agent?: "working" | "gone" | "failed" | "waiting" | "elsewhere";
+  /** With `gone` (no agent at work): what became of its chat, once read (server/chats.ts). */
+  chat?: ChatState;
   host: string;
 }
 
@@ -207,7 +210,13 @@ export function judge(input: JudgeInput): Verdict {
   for (const [index, hold] of holds.entries()) {
     if (hold.code !== "claim" || !hasLiveRun(task)) continue;
     if (input.agent === "gone") {
-      holds[index] = { ...hold, text: `${hold.text}; its agent is gone`, next: "release it: to done if the work is finished, to todo to start it again", by: "owner" };
+      const next =
+        input.chat === "closed"
+          ? "continue its closed chat if work is left, or release it: to done if the work is finished"
+          : "release it: to done if the work is finished, to todo to start it again";
+      holds[index] = { ...hold, text: `${hold.text}; ${chatSaid(input.chat)}`, next, by: "owner" };
+    } else if (input.agent === "failed") {
+      holds[index] = { ...hold, text: `${hold.text}; its agent failed`, next: "release it: to done if the work is finished, to todo to start it again", by: "owner" };
     } else if (input.agent === "waiting") {
       holds[index] = { ...hold, text: `${hold.text}; its agent waits`, next: "answer its agent in its chat, or release the task if the work is finished", by: "owner" };
     }

@@ -90,14 +90,17 @@ export function readOverview(dashboard: Dashboard, { space, limit }: RpcInput<ty
     for (const task of tasks.filter(hasLiveRun)) {
       const run = localRun(dashboard.runs, task);
       const needed = needOf(dashboard, task, host);
+      const chat = dashboard.chats.of(run);
+      // A chat that is gone has nothing to open.
+      const own = chat?.state === "gone" ? "" : (run?.agentId ?? "");
       if (needed) {
         const held = dashboard.reconciler.heldRun(entry, task, needed);
         // Work found for a gone agent's card names its own step: the rule's hold on the claim would hide it.
         const gone = stoppedReading(dashboard, task, host);
-        need({ task: task.id, title: task.title, why: needed.why, next: gone && needed.next === gone.next ? needed.next : (held?.next ?? needed.next), chat_id: needed.chatId ?? run?.agentId ?? "", kind: needed.kind, space: key, ...(held ? { cards: held.cards } : {}) }, needed.since);
+        need({ task: task.id, title: task.title, why: needed.why, next: gone && needed.next === gone.next ? needed.next : (held?.next ?? needed.next), chat_id: needed.chatId ?? own, kind: needed.kind, space: key, ...(held ? { cards: held.cards } : {}), ...(chat ? { chat } : {}) }, needed.since);
       }
       if (task.status !== "in_progress") continue;
-      result.running.push({ task: task.id, title: task.title, activity: runActivity(dashboard, task, host), state: waitState(dashboard, task, host).state, host: task.run_host ?? "", chat_id: run?.agentId ?? "", since: task.run_started ?? "" });
+      result.running.push({ task: task.id, title: task.title, activity: runActivity(dashboard, task, host), state: waitState(dashboard, task, host).state, host: task.run_host ?? "", chat_id: own, since: task.run_started ?? "" });
     }
     for (const task of tasks) {
       const qa = qaNeed(task);

@@ -33,6 +33,8 @@ import { MergedTracker, type MergedTrackerOptions } from "./tracker/merged.ts";
 import { WebHosts } from "./tracker/web-host.ts";
 import { BatchStore } from "./api/batch.ts";
 import { WaitProbe } from "./wait.ts";
+import { ChatProbe } from "./chats.ts";
+import { localRun } from "./api/view.ts";
 import { subAgentsAtWork } from "./needs.ts";
 import { prDetails } from "./tracker/details.ts";
 import { readLanded } from "./tracker/landed.ts";
@@ -178,6 +180,8 @@ export class Dashboard {
   readonly webHosts: WebHosts;
   /** What idle run agents wait on: their child agents and their PR/MR's checks (server/wait.ts). */
   readonly waits: WaitProbe;
+  /** What became of the chats of stopped runs, and sub-agents naming other tasks (server/chats.ts). */
+  readonly chats: ChatProbe;
   /** The one-way issue mirror (server/issues/mirror.ts); writes only where its switch is on. */
   readonly mirror: IssueMirror;
   /** This machine's mirror switches and the issues the mirror made; owner only. */
@@ -233,7 +237,11 @@ export class Dashboard {
         void this.follower.follow(run, cwd);
         if (run.activity === "waiting") void this.waits.probe(run);
       },
-      onReconciled: () => this.follower.sweep(),
+      onReconciled: () => {
+        this.follower.sweep();
+        void this.chats.read();
+      },
+      onChatChanged: () => void this.chats.changed(),
       onTurnEnded: (run) => void this.turnEnded(run),
       onLastMessage: (run) => {
         if (run.activity === "waiting" && run.lastMessage) this.events?.fill(run.run_id, run.activityAt, run.lastMessage);
@@ -289,6 +297,7 @@ export class Dashboard {
       forge: this.forge,
       git: this.runner,
       runs: () => (this.owner ? this.runs : undefined),
+      chat: (task) => this.chats.of(localRun(this.runs, task))?.state,
       seen: (taskId) => this.prs.seen.get(taskId),
       closers: (plan, task) => this.issues.peek(task, plan)?.closedBy ?? [],
       merged: (plan, task) => this.merged.shown(plan, task),
@@ -299,6 +308,13 @@ export class Dashboard {
     this.waits = new WaitProbe({
       paseo: () => this.paseo,
       checks: (run) => this.ownChecks(run),
+      log: (message) => console.error(`dashboard: ${message}`),
+    });
+    this.chats = new ChatProbe({
+      paseo: () => this.paseo,
+      runs: () => (this.owner ? this.runs : undefined),
+      isLive: (run) => this.isLive(run),
+      onOpen: (run) => this.tracker.revive(run),
       log: (message) => console.error(`dashboard: ${message}`),
     });
     this.webHosts = new WebHosts({ forge: this.forge, cwd: () => this.dataDir, log: (message) => console.error(`dashboard: ${message}`) });

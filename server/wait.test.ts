@@ -148,7 +148,7 @@ test("a stopped run says its PR/MR, handoff and open acceptance; a lost record i
     s.dashboard.runs!.setActivity(run, "stopped", new Date().toISOString());
     const stopped = needOf(s.dashboard, task(), HOST)!;
     assert.equal(stopped.kind, "stopped");
-    assert.match(stopped.why, /its agent is gone while the task is still open; no PR\/MR; no handoff; 1 of 2 acceptance lines open/);
+    assert.match(stopped.why, /its agent is stopped; its chat is not read yet; no PR\/MR; no handoff; 1 of 2 acceptance lines open/);
     assert.match(stopped.next, /release it: to done if it is finished, to todo to start it again/);
     assert.equal(waitState(s.dashboard, task(), HOST).state, "stopped");
     assert.equal(task().status, "in_progress", "nothing closes or restarts it by itself");
