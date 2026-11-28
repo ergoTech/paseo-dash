@@ -5,7 +5,7 @@ import { localHost } from "../api/view.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import type { RunRecord } from "../runner/runs.ts";
 import { prKey } from "../tracker/forge.ts";
-import { pendingRuns } from "../qa-cards.ts";
+import { pendingRuns, type QaRun } from "../qa-cards.ts";
 import { isApp } from "./android.ts";
 import { type CardFacts, mergedSince, named, type PrFact } from "./facts.ts";
 import { planHolds, qaExpected } from "./plan-gate.ts";
@@ -58,6 +58,8 @@ export interface StoppedReading {
   sources: { label: string; url: string }[];
   /** The facts' time, ISO. */
   at: string;
+  /** The recorded QA cards read open, when their run is all that waits: nothing stands before QA. */
+  qa?: QaRun[];
 }
 
 /** The clock difference allowed between the forge and the claiming machine when a merge is compared with a run's start. */
@@ -289,7 +291,9 @@ export function judgeStopped(input: JudgeInput): StoppedReading {
   ];
   // With nothing of the card merged, a stage that holds a follow-up holds none of its code.
   const holds = landed.length && extra?.stage?.sha === d?.stage_sha ? extra?.stage?.holds : undefined;
-  return { trunk, landed, open, related, ...(holds ? { holds } : {}), pending, earlier, why, ...step, url, sources, at: facts.at };
+  // QA is the wait only once the step itself is QA's: an open PR/MR, a stage build, a setup or a decision comes first.
+  const qa = !held && step.stage === "ready_for_qa" && step.next_by === "QA" ? pendingRuns(task.qa_cards).filter((card) => card.status === "open") : [];
+  return { trunk, landed, open, related, ...(holds ? { holds } : {}), pending, earlier, why, ...step, url, sources, at: facts.at, ...(qa.length ? { qa } : {}) };
 }
 
 /** The space whose plan holds the task. */
