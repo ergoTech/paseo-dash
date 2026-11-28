@@ -1,6 +1,7 @@
 import { hasLiveRun, type Task } from "../../shared/model.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import type { Closure } from "../sync/ops.ts";
+import { mentionOnly } from "../tracker/merged.ts";
 import { type CardFacts, merged, mergedSince, named, type PrFact } from "./facts.ts";
 import { scopeText } from "./history.ts";
 import { planHolds } from "./plan-gate.ts";
@@ -56,13 +57,15 @@ function forgeHolds(task: Task, rule: Rule, facts: CardFacts | undefined, scope:
     return [{ code: "forge", text: "its PR/MR facts are not read on this Mac yet", next: "wait: they are read in the background", by: "wait", source: card }];
   }
   const holds: Hold[] = [];
+  // A PR/MR that only mentions the card is never the evidence of a hold.
+  const tied = facts.prs.find((pr) => !mentionOnly(pr.ways));
   if (facts.unknown.length) {
     holds.push({
       code: "forge",
       text: cut(`not all of its forge facts could be read: ${facts.unknown[0]}${facts.unknown.length > 1 ? ` (+${facts.unknown.length - 1})` : ""}`),
       next: `check this Mac's gh or glab login and the project's checkout, or look at the PR/MR yourself and ${markDone}; it is read again in a minute`,
       by: "owner",
-      source: facts.prs[0] ? sourceOf(facts.prs[0]) : linkSource(task),
+      source: tied ? sourceOf(tied) : linkSource(task),
     });
   }
   const [limit] = facts.limits;
@@ -98,9 +101,10 @@ function forgeHolds(task: Task, rule: Rule, facts: CardFacts | undefined, scope:
     });
   }
   if (!done.length) {
-    const doubted = merged(facts)[0];
+    // A merged PR/MR that only mentions the card is not merged work in doubt (tracker/merged.ts).
+    const doubted = merged(facts).find((pr) => !mentionOnly(pr.ways));
     if (doubted) {
-      const why = !after(doubted) ? "it merged before the card was created" : doubted.doubts[0] ?? "only a mention ties it to the card";
+      const why = !after(doubted) ? "it merged before the card was created" : doubted.doubts[0] ?? "only its title names the card";
       holds.push({
         code: "tie",
         text: cut(`${doubted.label} is merged but is not proven to be this card's work: ${why}`),
@@ -213,7 +217,7 @@ export function judge(input: JudgeInput): Verdict {
     }
   }
   holds.sort(byOrder);
-  const sources = (facts?.prs ?? []).map(sourceOf);
+  const sources = (facts?.prs ?? []).filter((pr) => !mentionOnly(pr.ways)).map(sourceOf);
   if (holds.length) return { close: false, holds, sources };
   // The same merged work the holds verified: an older PR/MR a card links is no part of its closing.
   const done = merged(facts!).filter((pr) => pr.own && mergedSince(pr, task.created));

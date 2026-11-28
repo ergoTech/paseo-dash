@@ -1034,7 +1034,9 @@ time, two after errors, and a brief past 1,200 characters could not be read whol
 
 ### Reconcile, start candidates and delivery
 
-- `reconcile` lists open tasks whose work a merged PR/MR holds (03-model.md, Merged work): the PR/MR,
+- `reconcile` lists open tasks whose work a merged PR/MR holds (03-model.md, Merged work). A PR/MR
+  that names a task in its description only is not its work: for a named task, `note` begins with
+  "Mentioned in !N (URL)", and `delivery` says it on the code step. A row holds the PR/MR,
   merge commit, source branch, how it was tied, the acceptance still open and the next step; with
   `task`, it asks that task's forge now. `projects` names a GitLab project whose web host is not the
   one its forge serves, with the fix. It changes nothing; merged with open acceptance is not done.

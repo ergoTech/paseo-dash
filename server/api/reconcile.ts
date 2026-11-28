@@ -1,6 +1,7 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { RECONCILE_LEFT, type reconcileRpc } from "../../shared/api.ts";
 import { hasLiveRun, type Task } from "../../shared/model.ts";
+import { mentionText, mergedMentions } from "../reconcile/mentions.ts";
 import { type StoppedReading, stoppedReading } from "../reconcile/stopped.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import { type MergedPr, mergedCandidates } from "../tracker/merged.ts";
@@ -66,7 +67,7 @@ function goneRow(task: Task, loaded: LoadedEntity, gone: StoppedReading, rule: s
     title: task.title,
     status: task.status,
     project: task.project ?? "",
-    merged: [...gone.landed, ...gone.related].map((pr) => ({ pr: pr.label, url: pr.url, sha: pr.mergeSha, branch: pr.head, merged_at: pr.mergedAt, by: pr.ways.join(", ") })),
+    merged: gone.landed.map((pr) => ({ pr: pr.label, url: pr.url, sha: pr.mergeSha, branch: pr.head, merged_at: pr.mergedAt, by: pr.ways.join(", ") })),
     left: open.slice(0, RECONCILE_LEFT),
     left_count: open.length,
     next: gone.next,
@@ -112,6 +113,7 @@ function notFollowed(plan: Plan, task: Task, host: string): string {
   if (task.status === "done" || task.status === "canceled") return `${task.id} is ${task.status}.`;
   if (task.status === "review") return `${task.id} is in review: its acceptance is the owner's (accept_check).`;
   if (!task.project || !plan.space?.projects[task.project]) return `${task.id} has no project of its space, so no repository to look in.`;
+  if (task.run_id) return `${task.id} ran before: merged PR/MRs naming it are not looked for, only the one its run reported.`;
   return `${task.id} has no creation time to compare merges with.`;
 }
 
@@ -126,23 +128,25 @@ export async function reconcile(ctx: ReadContext, input: RpcInput<typeof reconci
     const plan = space.sync.plan;
     const projects = hostProblems(dashboard, [space]).filter((p) => p.project === task.project);
     const host = ctx.host ?? localHost();
+    // PR/MRs that only mention the card come first in the note: shown with their links, apart from its work.
+    const noted = (...rest: string[]) => [mentionText(task.id, mergedMentions(dashboard, space, task)), ...rest].filter(Boolean).join(" ");
     // An agent gone while its run holds the card: the forge is asked now, from any branch.
     if (dashboard.reconciler.stoppedHold(space, task, host)) {
       const read = await dashboard.reconciler.readNow(space, task, TASK_WAIT_MS);
       const gone = stoppedReading(dashboard, task, host);
       const late = read ? "" : "No new reading of the forge was made in time; this is the last one: read again in a few minutes.";
       if (!gone) return { tasks: [], projects, note: late || `${task.id}: its agent is gone, and its forge could not be read.`, error: "" };
-      if (gone.landed.length) return { tasks: [goneRow(task, loaded, gone, dashboard.reconciler.rule(space, task)?.mode ?? "")], projects, note: late, error: "" };
-      return { tasks: [], projects, note: [late, `${task.id}: ${gone.why}. Next: ${gone.next}.`].filter(Boolean).join(" "), error: "" };
+      if (gone.landed.length) return { tasks: [goneRow(task, loaded, gone, dashboard.reconciler.rule(space, task)?.mode ?? "")], projects, note: noted(late), error: "" };
+      return { tasks: [], projects, note: noted(late, `${task.id}: ${gone.why}. Next: ${gone.next}.`), error: "" };
     }
     if (dashboard.reconciler.rule(space, task)) {
       await dashboard.reconciler.factsFor(space, task, TASK_WAIT_MS);
       const watched = watchedRow(dashboard, space, task, loaded);
-      if (watched) return { tasks: [watched], projects, note: "", error: "" };
+      if (watched) return { tasks: [watched], projects, note: noted(), error: "" };
     }
-    if (!mergedCandidates(plan, task)) return { tasks: [], projects, note: notFollowed(plan, task, host), error: "" };
+    if (!mergedCandidates(plan, task)) return { tasks: [], projects, note: noted(notFollowed(plan, task, host)), error: "" };
     const mapped = task.project ? space.record.mapping[task.project] : undefined;
-    if (!mapped) return { tasks: [], projects, note: `Project ${task.project} is not mapped on this Mac: its forge cannot be asked from here.`, error: "" };
+    if (!mapped) return { tasks: [], projects, note: noted(`Project ${task.project} is not mapped on this Mac: its forge cannot be asked from here.`), error: "" };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<"late">((resolve) => {
       timer = setTimeout(() => resolve("late"), TASK_WAIT_MS);
@@ -154,8 +158,8 @@ export async function reconcile(ctx: ReadContext, input: RpcInput<typeof reconci
         ? "The forge did not answer in time; this is the last reading, the check goes on: read again in a minute."
         : merged.length
           ? ""
-          : `No merged PR/MR of ${task.project} names ${task.id} in its title, description or branch, is on its branch or links, or closed its issue.`;
-    return { tasks: merged.length ? [row(task, loaded, merged)] : [], projects, note, error: "" };
+          : `No merged PR/MR of ${task.project} names ${task.id} in its title or branch, is on its branch or links, or closed its issue.`;
+    return { tasks: merged.length ? [row(task, loaded, merged)] : [], projects, note: noted(note), error: "" };
   }
   const spaces = resolveSpaces(dashboard, input.space);
   if (!spaces.ok) return fail(spaces.error);

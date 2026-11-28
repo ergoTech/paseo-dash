@@ -599,7 +599,7 @@ does not answer leaves the last reading. A reading for other links, another bran
 
 Besides the branch and the links, the task's own id is looked for (JOBBY-YV2QS): a pass reads each
 project's latest merges once (`glab mr list --merged` or `gh pr list --state merged`, up to 50) and
-ties a merged PR/MR whose title, description or source branch names the id as a whole token
+finds a merged PR/MR whose title, description or source branch names the id as a whole token
 (`ERG-7MRG1`, `chore/erg-7mrg1-…`; not `ERG-7MRG1A`); a task screen or a `reconcile` of one task also
 asks the forge's search for the id. A session that named its branch otherwise is found that way
 (ERG-7MRG1 and site !412 on `chore/erg-7mrg1-start-signal-diagnostics`). The PR/MRs the forge
@@ -607,6 +607,29 @@ names as the closers of the task's issue count too, when they are its project's 
 or a similar title alone never ties one: the same number is another issue in another repository.
 Each reading keeps the merge commit (`mergeCommit` / `merge_commit_sha`, the squash commit when
 squashed), the source branch and how it was tied.
+
+**Merged work and mentions** (JOBBY-BCE5B). A description names other cards' work as often as its
+own: a "not in this MR, tracked in X" section names the card whose work is *not* there. So the ties
+differ in weight:
+
+| What ties the PR/MR to the task | Reads as |
+| --- | --- |
+| its source branch is the task's branch; it is one of the task's `links`; the id in its title or source branch; the forge says it closed the task's issue; the task's run reported it | the task's **merged work** |
+| the id in its description, and none of the above | a **mention** |
+
+A mention is shown with its link and nothing more: "Mentioned in !N" on the task screen, a sentence at
+the start of `reconcile`'s note for the task, the same sentence on the code step of `delivery`, and a
+signal in `ready_review`. It is no "Work already merged" and offers no Mark done, holds no start (the
+managed queue's included), is not told to a new agent, gives no reconciliation verdict (no Needs you
+row, no link among a card's evidence; the card is still read, so the mention stays shown) and moves no
+delivery stage. The one place it still counts is a
+[hold whose agent is gone](#a-hold-whose-agent-is-gone), where a follow-up that mentions the card is
+checked with the card's own work and can hold it back. A forge that did not answer never swaps merged work read before
+for a mention.
+
+The task's branch is its own by the plan's word. A card whose recorded branch another change used (a
+release branch named ahead of the release) reads that change as its work until someone corrects the
+card.
 
 Merged code is not accepted work. A task with merged work stays as it is; its start (start_check,
 start_plan) says what was merged and how many acceptance lines are open, nothing starts it on its own
@@ -716,7 +739,8 @@ Per project, per machine, the owner chooses `off` (the default), `report` or `cl
 Automatic closing; `reconcile.json` in the plugin's data, never the plan, never reachable from God
 Mode). A project that is not `off` is reconciled: every open card with work behind it (a PR/MR known,
 work under way or in review) is compared with the forge and the plan, after each sync of the plans and
-on what is old or changed. A card closes only when everything holds, and then once:
+on what is old or changed. A [mention](#merged-work-runtime-per-machine) alone gets no verdict. A card
+closes only when everything holds, and then once:
 
 - its own merged PR/MR: tied to the card by its run, a link on the card, its own branch (no other card
   plans it), its id in the PR/MR's branch, or the forge's record that it closed the card's issue, and
@@ -787,7 +811,9 @@ automatic closing verifies, and changes none of them. A run of another machine i
   run of a QA card read open is left), and overview,
   board, task, `reconcile` and `delivery` say the same next step.
 - Every check covers the same merges: the card's own and the **follow-ups** that name it in their
-  description. A PR/MR whose source is the target branch (a release, a promotion) is not counted.
+  description. A follow-up is listed as a mention, never as the card's merged work; with no work of
+  the card's own beside it, it is no code of the card. A PR/MR whose source is the target branch (a
+  release, a promotion) is not counted.
 - **Held back** by anything newer or unread: a PR/MR still open or a draft, an open one naming the card
   in its description, one closed without a merge (unless a later merge of the same branch replaced it; a
   linked one stays until its link is taken off), a revert that names the card (until a later merge of the card's own into the target branch

@@ -291,7 +291,7 @@ export class Dashboard {
       runs: () => (this.owner ? this.runs : undefined),
       seen: (taskId) => this.prs.seen.get(taskId),
       closers: (plan, task) => this.issues.peek(task, plan)?.closedBy ?? [],
-      merged: (plan, task) => this.merged.shown(plan, task),
+      merged: (plan, task) => this.merged.found(plan, task),
       ready: () => this.local !== undefined,
       log: (message) => console.error(`dashboard: ${message}`),
       ...options.reconcile,

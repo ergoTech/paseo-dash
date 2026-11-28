@@ -3,17 +3,28 @@ import { plannedBranch } from "../api/view.ts";
 import type { Plan } from "../plan/load.ts";
 import { SAFE_BRANCH } from "../sync/git.ts";
 import type { SpaceSync } from "../sync/space-sync.ts";
-import { type ForgeCli, type ForgePr, MERGED_LIST, prUrlOfProject } from "./forge.ts";
+import { type ForgeCli, type ForgePr, MERGED_LIST, prKey, prUrlOfProject } from "./forge.ts";
 
 /**
  * How a merged PR/MR is tied to a task, each checked in the task's own project only: its branch (the
  * planned one), a link of the task, the task's id in its title, description or source branch (so a
  * session that named its branch otherwise is still found: ERG-7MRG1 and site !412), or the forge
  * naming it as the one that closed the task's issue. An issue number or a similar title alone never
- * ties one: the same number is another issue in another repository.
+ * ties one: the same number is another issue in another repository. The id in the description is the
+ * one weak tie (`mentionOnly`).
  */
 export const MATCHED_BY = ["branch", "link", "id_in_title", "id_in_description", "id_in_branch", "closes_issue"] as const;
 export type MatchedBy = (typeof MATCHED_BY)[number];
+
+/**
+ * Whether only a description ties the PR/MR to the task. A description names other cards' work as
+ * often as its own ("not in this MR: ... tracked in X"), so such a PR/MR is a mention to show,
+ * never the task's merged work. Every other tie, alone or beside the description, makes it the work.
+ */
+export const mentionOnly = (by: readonly string[]): boolean => by.length > 0 && by.every((way) => way === "id_in_description");
+
+/** Whether a merged PR/MR of a reading is the task's work: tied by more than a mention, or reported by its run. */
+const isWork = (task: Task) => (pr: MergedPr) => !mentionOnly(pr.by) || (task.run_pr !== undefined && prKey(pr.url) === prKey(task.run_pr));
 
 /**
  * Work merged outside the dashboard (03-model.md, Work merged outside the dashboard): a task that
@@ -47,6 +58,7 @@ export interface MergedView {
   key: string;
   /** When this machine read it. */
   at: string;
+  /** Every merged PR/MR tied to the task, mentions included: read it through `shown` or `mentioned`. */
   merged: MergedPr[];
 }
 
@@ -274,16 +286,19 @@ export class MergedTracker {
     }
     if (this.stopped) return;
     const merged = mergedAfter(found, task.created!, task.id);
-    // A forge that did not answer leaves the last reading; a merge it did name is shown at once.
-    if (!merged.length && unanswered) return;
+    // A forge that did not answer leaves the last reading; a merge it did name is shown at once. A
+    // mention alone never replaces merged work read before: the unanswered question may be that work.
+    const before = this.seen.get(task.id);
+    const hadWork = before?.key === wanted.key && before.merged.some(isWork(task));
+    if (unanswered && !merged.some(isWork(task)) && (!merged.length || hadWork)) return;
     const view = { key: wanted.key, at: this.now().toISOString(), merged };
     if (search && searched !== undefined) this.searched.add(view);
     this.seen.set(task.id, view);
   }
 
   /**
-   * What this machine last read of a task's merged work, when it still applies to the task as it is
-   * now; an old reading starts a new one for this task, which this call does not wait for.
+   * The merged work this machine last read of a task, when the reading still applies to the task as it
+   * is now; an old reading starts a new one for this task, which this call does not wait for.
    */
   peekTask(space: { sync: SpaceSync; mapping: Record<string, string | null> }, task: Task): MergedPr[] {
     const wanted = mergedCandidates(space.sync.plan, task);
@@ -292,7 +307,7 @@ export class MergedTracker {
     // A forge that did not answer stores no reading: the last time it was asked counts too.
     const at = Math.max(Date.parse(view?.at ?? "") || 0, this.asked.get(task.id) ?? 0);
     if (!this.stopped && this.timer && this.now().getTime() - at >= FRESH_MS) void this.check(space, task).catch(() => undefined);
-    return view && view.key === wanted.key ? view.merged : [];
+    return view && view.key === wanted.key ? view.merged.filter(isWork(task)) : [];
   }
 
   /** Whether this reading searched the forge beyond the project's latest merges, and was answered. */
@@ -323,8 +338,19 @@ export class MergedTracker {
     return this.recent.get(`${space}:${project}`)?.prs.find((pr) => pr.url === url);
   }
 
-  /** The reading of a task as a list shows it: never asks the forge (`peek` does, once per pass). */
+  /** The task's merged work as a list shows it: never asks the forge (`peek` does, once per pass). */
   shown(plan: Plan, task: Task): MergedPr[] {
+    return this.found(plan, task).filter(isWork(task));
+  }
+
+  /** The merged PR/MRs that name the task in their description only: shown as mentions (`mentionOnly`). */
+  mentioned(plan: Plan, task: Task): MergedPr[] {
+    const work = isWork(task);
+    return this.found(plan, task).filter((pr) => !work(pr));
+  }
+
+  /** Every merged PR/MR of the reading, work and mentions, for a reader that weighs the ties itself. */
+  found(plan: Plan, task: Task): MergedPr[] {
     // Most tasks have no reading: the candidates are worked out only for those that do.
     const view = this.seen.get(task.id);
     if (!view?.merged.length) return [];
