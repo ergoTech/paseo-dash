@@ -18,7 +18,8 @@ export type StageHolds = "yes" | "no" | "unknown";
  * for each variant, QA and the publication are four states that stand apart.
  */
 export interface AppFacts {
-  prs: (Pick<PrFact, "label" | "url" | "state" | "mergedAt"> & { sha: string; blockers: string[] })[];
+  /** `followUp`: one that only mentions the card, listed beside its own work (stopped.ts). */
+  prs: (Pick<PrFact, "label" | "url" | "state" | "mergedAt"> & { sha: string; blockers: string[]; followUp?: boolean })[];
   apks: ApkFact[];
   trunk: string;
   /** Why not every PR/MR of the card could be read; "" when all were. */

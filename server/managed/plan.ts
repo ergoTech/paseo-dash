@@ -155,10 +155,12 @@ function unseen(ctx: ReadContext, space: SpaceEntry, loaded: LoadedEntity): Hold
 type Review = ReturnType<typeof reviewCards>["cards"] extends Map<string, infer C> ? C : never;
 
 /** What the ready review leaves open about a card nothing else holds. */
-function reviewHold(card: Review, checked: boolean, proven: ReadonlySet<string>): Hold | undefined {
-  if (card.coverage === "confirmed" || (card.basis === "own" && card.prs.length)) return owner("merged", card.evidence.join("; "), card.next);
+function reviewHold(card: Review, checked: boolean, proven: ReadonlySet<string>, mentions: ReadonlySet<string>): Hold | undefined {
+  // The review lists a PR/MR that only mentions the card as a signal; it holds nothing (tracker/merged.ts).
+  const prs = card.prs.filter((pr) => !mentions.has(pr.url));
+  if (card.coverage === "confirmed" || (card.basis === "own" && prs.length)) return owner("merged", card.evidence.join("; "), card.next);
   if (checked) return undefined;
-  const earlier = card.coverage === "partial" || card.prs.length > 0 || card.evidence.some((line) => line.startsWith("an earlier run left a handoff"));
+  const earlier = card.coverage === "partial" || prs.length > 0 || card.evidence.some((line) => line.startsWith("an earlier run left a handoff"));
   if (earlier) return owner("covered", cut(card.evidence.join("; "), 300), `${card.next}. Record that you checked it (update_task readiness_note) to let the queue start it`);
   // A card proven to be the same work is no mere signal: it is dealt with as a duplicate.
   const related = card.related.filter((row) => !proven.has(row.id));
@@ -205,7 +207,8 @@ export function planQueue(ctx: ReadContext, space: SpaceEntry, scope: Scope, not
     const review = reviews.get(task.id);
     const checked = Boolean(task.readiness_checked);
     const proven = new Set([...duplicates].flatMap(([id, twin]) => (id === task.id ? [twin.of] : twin.of === task.id ? [id] : [])));
-    if (!hold && review) hold = reviewHold(review, checked, proven) ?? unseen(ctx, space, loaded);
+    const mentions = new Set(ctx.dashboard.merged.mentioned(plan, task).map((pr) => pr.url));
+    if (!hold && review) hold = reviewHold(review, checked, proven, mentions) ?? unseen(ctx, space, loaded);
     if (hold) return { ...base, ...hold, waits_for: hold.waits_for ?? [] };
     const note = notes(task.id);
     if (note) return { ...base, ...owner(note.needs, note.reason, note.needs === "incomplete" ? SETTLE_DATA : "settle that; the queue tries it again later") };

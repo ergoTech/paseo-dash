@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { reconcile } from "../api/reconcile.ts";
 import { updateTask } from "../api/writes.ts";
 import { Dashboard } from "../dashboard.ts";
+import { taskDelivery } from "../delivery.ts";
 import { readOverview } from "../overview.ts";
 import { FakePaseo } from "../runner/testing.ts";
 import { scriptedGit, sh, UNREACHABLE } from "../sync/testing.ts";
@@ -128,23 +130,85 @@ test("a foreign or doubtful PR/MR is not the card's work: another card's, a mere
     // #41 is the PR of another card's run: linking it to a second card makes it nobody's alone.
     await s.card("TST-AC001", `status: todo\n${links(41)}`, ALL_TICKED);
     await s.card("TST-AC009", `status: in_progress\nrun_id: r-other\nrun_by: anna\nrun_host: anna-mbp\nrun_branch: feat/other\nrun_started: 2026-11-21T10:00:00Z\nrun_pr: ${PR_URL(41)}\n`, ALL_TICKED);
-    // Its description names the card; no link, no branch of the card, no id in its title or branch.
+    // Only its description names the card: no link, no branch of the card, no id in its title or branch.
     await s.card("TST-AC003", "status: todo\n", ALL_TICKED);
     // Merged before the card was created.
     await s.card("TST-AC004", `status: todo\n${links(43)}`, ALL_TICKED);
     await s.card("TST-AC005", `status: todo\n${links(44)}`, ALL_TICKED);
-    // The card nobody linked is found the way the merged tracker finds work: by its id in a description.
+    // The merged tracker finds both mentions, and neither is merged work.
     await s.dashboard.merged.checkAll();
     await stays(s, "TST-AC001", "tie");
     assert.match(hold(s, "TST-AC001")!.text, /is the PR\/MR of TST-AC009/);
-    await stays(s, "TST-AC003", "tie");
-    assert.match(hold(s, "TST-AC003")!.text, /only a mention ties it/);
+    await s.pass();
+    await s.settle();
+    assert.equal(s.taskOf("TST-AC003").status, "todo");
+    assert.equal(s.dashboard.reconciler.verdict(s.space(), s.taskOf("TST-AC003")), undefined, "a mention is no work to reconcile");
+    const mentioned = await reconcile(s.ctx, { task: "TST-AC003" });
+    assert.deepEqual(mentioned.tasks, []);
+    assert.match(mentioned.note, /^Mentioned in #42 \(https:\/\/github\.com\/acme\/core\/pull\/42\)/);
+    const asked = readOverview(s.dashboard, {}, "ergo-mbp").needs_you.flatMap((item) => item.cards ?? []);
+    assert.ok(!asked.some((card) => card.task === "TST-AC003"), "Needs you asks nothing about it");
     await stays(s, "TST-AC004", "tie");
     assert.match(hold(s, "TST-AC004")!.text, /merged before the card was created/);
     await stays(s, "TST-AC005", "base");
     assert.match(hold(s, "TST-AC005")!.text, /merged into release\/2\.3, not main/);
     assert.equal(s.taskOf("TST-AC009").status, "in_progress", "the card whose run it is stays that run's");
     assert.equal(s.taskOf("TST-AC009").run_ended, undefined);
+  } finally {
+    s.stop();
+  }
+});
+
+test("a card in review that a merged PR only mentions has no merged PR known, and its row links no mention", async () => {
+  const s = await reconcileSetup();
+  try {
+    s.github.prs = [merged(42, { body: "Not in this PR: the rest is tracked in TST-AC001." })];
+    await s.card("TST-AC001", "status: review\n", ALL_TICKED);
+    // Twice: the second pass has the first reading, with the mention among its PR/MRs.
+    for (let i = 0; i < 2; i += 1) {
+      await s.pass();
+      await s.settle();
+    }
+    assert.equal(s.taskOf("TST-AC001").status, "review");
+    const codes = s.dashboard.reconciler.verdict(s.space(), s.taskOf("TST-AC001"))!.holds.map((h) => h.code);
+    assert.ok(codes.includes("no_pr") && !codes.includes("tie"), codes.join(", "));
+    const item = readOverview(s.dashboard, {}, "ergo-mbp").needs_you.find((n) => n.cards?.some((c) => c.task === "TST-AC001"));
+    assert.deepEqual(item?.cards?.[0]?.links, []);
+    const read = await reconcile(s.ctx, { task: "TST-AC001" });
+    assert.deepEqual([read.tasks[0]?.merged, read.tasks[0]?.sources], [[], []]);
+    assert.match(read.note, /Mentioned in #42/);
+    const delivery = await taskDelivery(s.ctx, { task: "TST-AC001" });
+    assert.match(delivery.steps.find((step) => step.step === "MR")!.fact, /^no PR\/MR known\. Mentioned in #42 /);
+    assert.equal(delivery.stage, "in_work");
+  } finally {
+    s.stop();
+  }
+});
+
+test("a card that ran before keeps its mention in a named read, and a mention is never a hold's evidence", async () => {
+  const s = await reconcileSetup();
+  try {
+    s.github.prs = [merged(42, { body: "Tracked in TST-AC001 and TST-AC002." })];
+    await s.card("TST-AC001", "status: todo\nrun_id: r-old\nrun_by: anna\nrun_host: anna-mbp\nrun_ended: 2026-11-21T12:00:00Z\n", ALL_TICKED);
+    const first = await reconcile(s.ctx, { task: "TST-AC001" });
+    assert.deepEqual(first.tasks, []);
+    assert.match(first.note, /^Mentioned in #42 .*TST-AC001 ran before/);
+    // The pass keeps reading it, so the mention stays shown; it still gets no verdict.
+    await s.pass();
+    await s.settle();
+    assert.match((await reconcile(s.ctx, { task: "TST-AC001" })).note, /^Mentioned in #42 /);
+    assert.equal(s.dashboard.reconciler.verdict(s.space(), s.taskOf("TST-AC001")), undefined);
+
+    // In review with a link into another repository: the hold rests on the card's link, not on the mention.
+    await s.card("TST-AC002", `status: review\nlinks: ["https://github.com/acme/other/pull/7"]\n`, ALL_TICKED);
+    await s.pass();
+    await s.settle();
+    s.github.down = true;
+    await s.dashboard.reconciler.read(s.space(), s.taskOf("TST-AC002"));
+    s.github.down = false;
+    const holds = s.dashboard.reconciler.verdict(s.space(), s.taskOf("TST-AC002"))!.holds;
+    assert.ok(holds.some((h) => h.code === "forge"));
+    assert.ok(!holds.some((h) => h.source.url === PR_URL(42)));
   } finally {
     s.stop();
   }

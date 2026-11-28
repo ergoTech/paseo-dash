@@ -21,8 +21,8 @@ export const overviewInput = z.object({
  * still open (`subagent`), a run whose agent is stopped otherwise (`stopped`: its chat closed,
  * archived or gone, also a run this Mac holds but has no record of), a tracked checkout on the trunk with no agent at work (`checkout`: its agent's
  * end is the normal one, not a failure, yet only a person moves the task on), and work to decide on:
- * a PR/MR `closed` without a merge, `merged` without the task done, `accept` for a task in review with
- * no PR/MR. A task in review whose PR/MR is open waits for its merge on the forge and is listed under
+ * a PR/MR `closed` without a merge, `merged` without the task done (`qa` instead when its agent is gone
+ * and only a recorded QA card's run is left), `accept` for a task in review with no PR/MR. A task in review whose PR/MR is open waits for its merge on the forge and is listed under
  * `review` instead. In a project this machine reconciles (server/reconcile) the open PR/MRs are also one
  * `merge` list, in the order to merge them, each with its own blockers, and every other card the rule
  * left open is a `reconcile` group, cards that wait for the same thing together, each with the links to

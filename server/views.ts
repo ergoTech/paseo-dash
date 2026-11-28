@@ -7,6 +7,7 @@ import type { featureViewRpc, taskCodeMapRpc, taskRunsRpc, taskViewRpc } from ".
 import { activityText, blockers, featuresOf, localHost, localRun, milestoneOf, milestonesOf, overlapsByTask, prText, progressText, sortTasks, spokenTime, tasksOf } from "./api/view.ts";
 import { agentHold, requirementText } from "./api/start-verdict.ts";
 import { hasDelivery } from "./delivery.ts";
+import { mergedMentions } from "./reconcile/mentions.ts";
 import { elsewhereText, historyWithin, localRecord, runProgress, runResult } from "./api/runs.ts";
 import { hashText, taskInstructions } from "./runner/seen.ts";
 import type { Dashboard } from "./dashboard.ts";
@@ -132,6 +133,7 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
   const prUrl = ownSeen ? ownSeen.url : (task.run_pr ?? goneMerged[0]?.url ?? "");
   const issueRef = parseIssueUrl(task.issue);
   const issue = task.issue ? issueFacts(task, dashboard.issues.peek(task, plan), readableIssue(plan, task.issue)) : undefined;
+  const mentioned = dashboard.owner ? mergedMentions(dashboard, entry, task) : [];
   return {
     found: true,
     space: entry.record.key,
@@ -191,6 +193,7 @@ export function taskView(dashboard: Dashboard, input: RpcInput<typeof taskViewRp
     clarifications: loaded.clarifications ?? "",
     instructions_hash: hashText(taskInstructions(loaded.brief, loaded.acceptance.map((a) => a.text), loaded.handoff?.text, loaded.clarifications)),
     merged: dashboard.owner ? dashboard.merged.peekTask({ sync: entry.sync, mapping: entry.record.mapping }, task) : [],
+    ...(mentioned.length ? { mentioned } : {}),
     wait: live ? { ...waitState(dashboard, task), ...(gone && (goneMerged.length || gone.pending.length) ? { next: gone.next } : {}) } : null,
     sub_agents: dashboard.chats.of(run)?.sub_agents ?? [],
     other_chats: closed(task) ? [] : dashboard.chats.naming(task.id),

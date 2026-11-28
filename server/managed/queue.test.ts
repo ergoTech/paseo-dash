@@ -84,6 +84,31 @@ const pass = (s: S) => s.dashboard.autopilot!.pass(s.ctx);
 const running = (s: S) => [...s.fake.agents.values()].length;
 const queueStarts = (s: S) => s.dashboard.autopilot!.read().started.map((x) => x.task);
 
+test("a merged PR/MR that only mentions a card holds it back from the queue in no way", async () => {
+  const mention = new ForgeCli(async (command, args) => {
+    if (command !== "gh" || args[1] !== "list") return { code: 1, stdout: "" };
+    if (!args.includes("merged")) return { code: 0, stdout: "[]" };
+    const pr = { number: 42, url: "https://github.com/acme/core/pull/42", state: "MERGED", mergedAt: "2026-11-01T10:00:00Z", headRefName: "fix/other", isCrossRepository: false, title: "fix: other work", body: "Not in this PR: tracked in TST-Q0001 and TST-Q0002." };
+    return { code: 0, stdout: JSON.stringify([pr]) };
+  });
+  const s = await world(
+    {
+      "TST-Q0001": { title: "Quota export", brief: "Export the quota report as CSV." },
+      "TST-Q0002": { title: "Webhook signing", brief: "Sign every outgoing webhook.", lines: ["x the key is stored", "every webhook is signed"], front: "readiness_checked: 2026-11-02T10:00:00Z\nreadiness_note: checked\n" },
+    },
+    { forge: mention },
+  );
+  try {
+    see(s, "TST-Q0001", "TST-Q0002");
+    const one = await row(s, "TST-Q0001");
+    assert.deepEqual([one.action, one.needs], ["next", ""], one.reason);
+    const two = await row(s, "TST-Q0002");
+    assert.deepEqual([two.action, two.needs], ["queued", ""], two.reason);
+  } finally {
+    s.stop();
+  }
+});
+
 test("the preview says what the queue proposes for each card and why, before anything is turned on, and changes nothing", async () => {
   const s = await world(
     {

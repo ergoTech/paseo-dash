@@ -97,7 +97,9 @@ export function readOverview(dashboard: Dashboard, { space, limit }: RpcInput<ty
         const held = dashboard.reconciler.heldRun(entry, task, needed);
         // Work found for a gone agent's card names its own step: the rule's hold on the claim would hide it.
         const gone = stoppedReading(dashboard, task, host);
-        need({ task: task.id, title: task.title, why: needed.why, next: gone && needed.next === gone.next ? needed.next : (held?.next ?? needed.next), chat_id: needed.chatId ?? own, kind: needed.kind, space: key, ...(held ? { cards: held.cards } : {}), ...(chat ? { chat } : {}) }, needed.since);
+        // A `qa` wait names its QA cards, in a reconciled project and outside one.
+        const cards = needed.links ? [{ task: task.id, title: task.title, note: needed.why, source: "Trello, as last recorded", links: needed.links }] : held?.cards;
+        need({ task: task.id, title: task.title, why: needed.why, next: gone && needed.next === gone.next ? needed.next : (held?.next ?? needed.next), chat_id: needed.chatId ?? own, kind: needed.kind, space: key, ...(cards ? { cards } : {}), ...(chat ? { chat } : {}) }, needed.since);
       }
       if (task.status !== "in_progress") continue;
       result.running.push({ task: task.id, title: task.title, activity: runActivity(dashboard, task, host), state: waitState(dashboard, task, host).state, host: task.run_host ?? "", chat_id: own, since: task.run_started ?? "" });

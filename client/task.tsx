@@ -401,6 +401,23 @@ function TaskActions({
           <Text style={styles.muted}>Merged after the task was created, by work no run of this task did. Its status changes only when you mark it done.</Text>
         </View>
       ) : null}
+      {t.mentioned?.length ? (
+        <View style={[styles.row, { flexWrap: "wrap", gap: 4 }]}>
+          <Text style={styles.muted}>Mentioned in</Text>
+          {t.mentioned.map((pr) =>
+            isWebUrl(pr.url) ? (
+              <ExternalLink key={pr.url} href={pr.url}>
+                <Text style={[styles.muted, { color: theme.colors.accent }]}>{pr.label}</Text>
+              </ExternalLink>
+            ) : (
+              <Text key={pr.url} style={styles.muted}>
+                {pr.label}
+              </Text>
+            ),
+          )}
+          <Text style={styles.muted}>(in the description only: not this task's merged work)</Text>
+        </View>
+      ) : null}
       {a.unheld ? (
         <Text style={styles.muted}>
           {`In progress, but no run of this dashboard holds it: a session outside the dashboard or an edit of the plan set the status, so nothing moves it by itself. Mark it done, put it back to todo, cancel it, or start a new run.`}

@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { issueKey } from "../../shared/issues.ts";
 import { reconcile } from "../api/reconcile.ts";
 import { getTask, getTaskWithRuns, readBoard } from "../api/reads.ts";
@@ -171,7 +173,11 @@ test("#48 with the follow-up #52: open, it holds the card though only its descri
     s.github.prs = [merged(48), { ...followUp, state: "MERGED", mergedAt: soon(90), mergeSha: `${STAGE}${"1".repeat(33)}` }];
     ({ rec, need, delivery } = await reads(s));
     assert.match(need!.next, /QA tests on stage/);
-    assert.deepEqual(rec.tasks[0]!.merged.map((pr) => pr.pr), ["#48", "#52"]);
+    assert.deepEqual(rec.tasks[0]!.merged.map((pr) => pr.pr), ["#48"], "the follow-up is no merged work of the card");
+    assert.match(rec.note, /^Mentioned in #52 \(https:\/\/github\.com\/acme\/core\/pull\/52\)/);
+    assert.ok(rec.tasks[0]!.sources!.some((source) => source.label === "#52 mentions the card"));
+    assert.match(delivery.steps.find((step) => step.step === "MR")!.fact, /Mentioned in #52 /);
+    assert.doesNotMatch(delivery.steps.find((step) => step.step === "MR")!.fact, /#52 merged/);
     assert.equal(delivery.next, need!.next);
     untouched(s, s.run.run_id);
   } finally {
@@ -465,6 +471,45 @@ test("another card's PR/MR that mentions this one is never its result", async ()
   }
 });
 
+test("an app card a merged PR/MR only mentions has no code and no build, whatever a recorded build holds", async () => {
+  const s = await held();
+  try {
+    const root = s.dashboard.projectRoots.get("prj_core")!;
+    sh(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "follow-up");
+    const sha = sh(root, "rev-parse", "HEAD").trim();
+    sh(root, "push", "--quiet", "origin", "HEAD:main");
+    const build = `{variant: phone, environment: staging, sha: ${sha}, url: "https://apk.example.com/b.apk"}`;
+    s.f.external("ergo", (clone) => {
+      const dir = join(clone, "tasks");
+      const file = join(dir, readdirSync(dir).find((name) => name.startsWith(ID))!);
+      writeFileSync(file, readFileSync(file, "utf8").replace(/^delivery: .*$/m, `delivery: {variants: [phone], qa: pending, builds: [${build}]}`));
+    });
+    await s.sync().sync();
+    s.github.prs = [merged(70, { head: "chore/other", body: `Unblocks ${ID}.`, mergeSha: sha })];
+    const { rec, delivery } = await reads(s);
+    assert.deepEqual(rec.tasks, []);
+    assert.match(rec.note, /^Mentioned in #70 /);
+    const code = delivery.steps.find((step) => step.step === "Code")!;
+    assert.equal(code.state, "none");
+    assert.match(code.fact, /no PR\/MR of the card is known.*Mentioned in #70 /);
+    assert.doesNotMatch(delivery.qa_handoff, /pull\/70|holds #70/);
+    assert.equal(delivery.steps.find((step) => step.step === "APK phone")!.state, "awaited");
+
+    // Beside work of its own the follow-up is checked with it, and said as what it is, once.
+    s.github.prs.push(merged(46, { mergeSha: sha, mergedAt: soon(30) }));
+    s.github.prs[0]!.mergedAt = soon(90);
+    const both = await reads(s);
+    const listed = both.delivery.steps.find((step) => step.step === "Code")!.fact;
+    assert.match(listed, /#46 merged [^;]*; #70 merged [^;]*, a follow-up that mentions the card|#70 merged [^;]*, a follow-up that mentions the card; #46 merged/);
+    assert.doesNotMatch(listed, /not counted/);
+    assert.match(both.delivery.steps.find((step) => step.step === "APK phone")!.fact, /holds .*#70/);
+    assert.match(both.delivery.qa_handoff, /Code: https:\/\/github\.com\/acme\/core\/pull\/46/);
+    untouched(s, s.run.run_id);
+  } finally {
+    s.stop();
+  }
+});
+
 test("the exact id in the title of a merged PR/MR is the card's merge: the same work is not offered again", async () => {
   const s = await held();
   try {
@@ -709,6 +754,41 @@ test("an unsettled QA card is the step of a merged card whose agent is gone: arc
   }
 });
 
+test("merged work that waits only for an open QA card is a qa wait with that card, and merged again once something comes first", async () => {
+  const card = "https://trello.com/c/AbCd1234";
+  const open = `qa_cards: [{url: "${card}", checked: "2026-01-02T14:03:00Z", state: open, name: "#12 · Sign-in"}]\n`;
+  const s = await held(`${QA}${open}`);
+  try {
+    s.github.prs = [merged(46)];
+    const { need, board, task, delivery } = await reads(s);
+    assert.deepEqual([need?.kind, board.needs, task.needs], ["qa", "qa", "qa"]);
+    assert.match(need!.why, /^Trello #12 open when read 2026-01-02 14:03Z; its agent is stopped; #46/);
+    assert.deepEqual(need!.cards![0]!.links.slice(0, 2), [
+      { label: "#12", url: card },
+      { label: "#46 merged", url: PR_URL(46) },
+    ]);
+    assert.deepEqual([need!.next, task.next], [delivery.next, delivery.next]);
+    assert.equal(task.state?.startsWith("stopped"), true, task.state);
+    assert.equal(readOverview(s.dashboard, {}, HOST).needs_you.filter((n) => n.task === ID).length, 1, "said once");
+    untouched(s, s.run.run_id);
+  } finally {
+    s.stop();
+  }
+  for (const [front, why] of [
+    [`${QA}${open}requires: [{kind: decision, reason: pick one of the two fixes}]\n`, "a decision comes first"],
+    [`delivery: {trello: "${card}"}\n${open}`, "no stage build is recorded"],
+    [QA, "no QA card is recorded"],
+  ] as const) {
+    const other = await held(front);
+    try {
+      other.github.prs = [merged(46)];
+      assert.equal((await reads(other)).need?.kind, "merged", why);
+    } finally {
+      other.stop();
+    }
+  }
+});
+
 test("a revert holds a card only while its work has not come back, and the card's own revert is its work", async () => {
   const s = await held("", { acceptance: ["[x] Code works"] });
   try {
@@ -789,6 +869,34 @@ test("a closed chat comes before starting the card again in every read, and an o
     assert.match(after.need!.next, /^check its open sub-agent's chat first; /);
     assert.deepEqual([after.board.next, after.task.next, after.delivery.next], [after.need!.next, after.need!.next, after.need!.next]);
     untouched(s, s.run.run_id);
+  } finally {
+    s.stop();
+  }
+});
+
+test("an open sub-agent of the stopped run comes before a qa wait, which stays in the next step", async () => {
+  const card = "https://trello.com/c/AbCd1234";
+  const open = `qa_cards: [{url: "${card}", checked: "2026-01-02T14:03:00Z", state: open, name: "#12 · Sign-in"}]\n`;
+  const s = await held(`${QA}${open}`);
+  try {
+    const agent = s.fake.agents.get(s.run.agentId!)!;
+    agent.status = "closed";
+    s.fake.agents.set("sub-1", { ...agent, id: "sub-1", status: "idle", labels: { [PARENT_AGENT_LABEL]: s.run.agentId! } });
+    await s.dashboard.chats.read();
+    s.github.prs = [merged(46)];
+    const { need, task, delivery } = await reads(s);
+    assert.deepEqual([need?.kind, need?.chat_id], ["subagent", "sub-1"]);
+    assert.match(need!.next, /^check its open sub-agent's chat first; /);
+    assert.deepEqual([task.next, delivery.next], [need!.next, need!.next]);
+    assert.match(task.state!, /^subagent_open: /);
+
+    // In review nothing but the QA card waits: the qa need, and the state still names the sub-agent.
+    await s.sync().record([{ op_id: "op-review", kind: "transition", id: ID, to: "review", run_id: s.run.run_id, at: new Date().toISOString() }]).outcomes;
+    const later = await reads(s);
+    assert.equal(later.need?.kind, "qa");
+    assert.match(later.need!.why, /its chat is closed and can be continued/);
+    assert.match(later.task.state!, /^subagent_open: /);
+    untouched(s, s.run.run_id, "review");
   } finally {
     s.stop();
   }

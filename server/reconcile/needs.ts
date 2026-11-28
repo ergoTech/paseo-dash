@@ -7,6 +7,7 @@ import type { Dashboard } from "../dashboard.ts";
 import { type CardFacts, named, type PrFact } from "./facts.ts";
 import { mergeBlockers } from "./merge.ts";
 import { qaNeed } from "../qa-cards.ts";
+import { mentionOnly } from "../tracker/merged.ts";
 import { sourceOf } from "./verdict.ts";
 import type { Hold } from "./types.ts";
 
@@ -54,7 +55,8 @@ const GROUP_WORDS: Record<Hold["code"], string> = {
   report: "verified, waiting for you to mark them done",
 };
 
-const labels = (facts: CardFacts | undefined) => (facts?.prs ?? []).map(sourceOf);
+/** The evidence a card's row links: never a PR/MR that only mentions the card. */
+const labels = (facts: CardFacts | undefined) => (facts?.prs ?? []).filter((pr) => !mentionOnly(pr.ways)).map(sourceOf);
 
 /** The first hold of a card that someone has to act on; undefined when none is, or the card only waits. */
 function ownersHold(holds: Hold[]): Hold | undefined {

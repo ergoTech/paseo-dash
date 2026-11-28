@@ -6,7 +6,7 @@ import { localHost } from "../api/view.ts";
 import type { LoadedEntity, Plan } from "../plan/load.ts";
 import type { RunRecord } from "../runner/runs.ts";
 import { prKey } from "../tracker/forge.ts";
-import { pendingRuns } from "../qa-cards.ts";
+import { pendingRuns, type QaRun } from "../qa-cards.ts";
 import { isApp } from "./android.ts";
 import { type CardFacts, mergedSince, named, type PrFact } from "./facts.ts";
 import { planHolds, qaExpected } from "./plan-gate.ts";
@@ -60,6 +60,8 @@ export interface StoppedReading {
   sources: { label: string; url: string }[];
   /** The facts' time, ISO. */
   at: string;
+  /** The recorded QA cards read open, when their run is all that waits: nothing stands before QA. */
+  qa?: QaRun[];
 }
 
 /** The clock difference allowed between the forge and the claiming machine when a merge is compared with a run's start. */
@@ -111,6 +113,15 @@ export const followUp = (pr: Pick<PrFact, "own" | "ways" | "doubts" | "theirs">)
  * follow-ups. A PR/MR whose source is the target branch only carries it onwards (a release, a promotion).
  */
 export const ofCard = (pr: PrFact, trunk: string): boolean => pr.head !== trunk && (named(pr) || cardsOwn(pr) || followUp(pr));
+
+/**
+ * The PR/MRs a gone hold takes as the card's code, for its app builds: those of `ofCard`, the follow-ups
+ * only beside work of the card's own. Alone they only mention it, and no build is said to cover them.
+ */
+export function goneCode(facts: Pick<CardFacts, "prs" | "trunk">): (pr: PrFact) => boolean {
+  const own = facts.prs.some((pr) => pr.state !== "closed" && ofCard(pr, facts.trunk) && !followUp(pr));
+  return (pr) => ofCard(pr, facts.trunk) && (own || !followUp(pr));
+}
 
 /** What an open PR/MR still needs before it can merge, as the forge said. */
 function unready(pr: PrFact): string[] {
@@ -286,9 +297,16 @@ export function judgeStopped(input: JudgeInput): StoppedReading {
   ]
     .filter(Boolean)
     .join("; ");
-  const sources = [...open, ...landed, ...related].map((pr) => ({ label: `${pr.label} ${pr.state}`, url: pr.url }));
-  const holds = extra?.stage?.sha === d?.stage_sha ? extra?.stage?.holds : undefined;
-  return { trunk, landed, open, related, ...(holds ? { holds } : {}), pending, earlier, why, ...step, url, sources, at: facts.at };
+  // A follow-up only mentions the card: its link says so, apart from the card's merged work.
+  const sources = [
+    ...[...open, ...landed].map((pr) => ({ label: `${pr.label} ${pr.state}`, url: pr.url })),
+    ...related.map((pr) => ({ label: `${pr.label} mentions the card`, url: pr.url })),
+  ];
+  // With nothing of the card merged, a stage that holds a follow-up holds none of its code.
+  const holds = landed.length && extra?.stage?.sha === d?.stage_sha ? extra?.stage?.holds : undefined;
+  // QA is the wait only once the step itself is QA's: an open PR/MR, a stage build, a setup or a decision comes first.
+  const qa = !held && step.stage === "ready_for_qa" && step.next_by === "QA" ? pendingRuns(task.qa_cards).filter((card) => card.status === "open") : [];
+  return { trunk, landed, open, related, ...(holds ? { holds } : {}), pending, earlier, why, ...step, url, sources, at: facts.at, ...(qa.length ? { qa } : {}) };
 }
 
 /** The space whose plan holds the task. */
@@ -311,7 +329,7 @@ export function stoppedReading(dashboard: Dashboard, task: Task, host: string = 
   // An app card's QA waits for a build of each variant (android.ts), not for a stage.
   const app: AppFacts | undefined = isApp(task)
     ? {
-        prs: facts.prs.filter((pr) => ofCard(pr, facts.trunk) && pr.state !== "closed").map((pr) => ({ label: pr.label, url: pr.url, state: pr.state, mergedAt: pr.mergedAt, sha: pr.mergeSha, blockers: [] })),
+        prs: facts.prs.filter((pr) => goneCode(facts)(pr) && pr.state !== "closed").map((pr) => ({ label: pr.label, url: pr.url, state: pr.state, mergedAt: pr.mergedAt, sha: pr.mergeSha, blockers: [] })),
         apks: facts.gone?.apks ?? [],
         trunk: facts.trunk,
         unread: "",

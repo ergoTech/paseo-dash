@@ -245,6 +245,9 @@ export function readAt(time: string): string {
   return Number.isNaN(parsed) ? time : `${new Date(parsed).toISOString().slice(0, 16).replace("T", " ")}Z`;
 }
 
+/** A card whose run is open, as Needs you names it. */
+export const openCard = ({ card }: QaRun): string => `${cardLabel(card)} open when read ${readAt(card.checked!)}`;
+
 /**
  * What Needs you says of a task's QA cards: a card archived with nothing replacing it, whatever the
  * task's status, or a done task whose QA is not settled and would otherwise be out of view. A
@@ -256,7 +259,7 @@ export function qaNeed(task: Pick<Task, "status" | "qa_cards">): { why: string; 
   const unclear = pending.filter((run) => run.status === "unclear");
   const shown = unclear.length ? unclear : task.status === "done" ? pending : [];
   if (!shown.length) return undefined;
-  const names = shown.map((run) => `${cardLabel(run.card)} ${run.status === "unclear" ? "archived, no known replacement" : run.status === "unread" ? "not read" : `open when read ${readAt(run.card.checked!)}`}`);
+  const names = shown.map((run) => (run.status === "open" ? openCard(run) : `${cardLabel(run.card)} ${run.status === "unclear" ? "archived, no known replacement" : "not read"}`));
   return {
     why: `${task.status === "done" ? "done, QA not settled: " : ""}Trello ${names.join("; ")}`,
     next: unclear.length
