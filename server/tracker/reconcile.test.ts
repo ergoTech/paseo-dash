@@ -6,11 +6,14 @@ import type { SpaceProject, Task } from "../../shared/model.ts";
 import type { Plan } from "../plan/load.ts";
 import type { SpaceSync } from "../sync/space-sync.ts";
 import { reconcile, reconcileNext } from "../api/reconcile.ts";
-import { planStart, startCheck } from "../api/reads.ts";
+import { planStart, readBoard, startCheck } from "../api/reads.ts";
+import { readyReview } from "../api/ready-review.ts";
 import { startPlan } from "../api/start-set.ts";
 import { setup } from "../api/testing.ts";
 import { closingReference, projectRepo } from "../issues/link.ts";
 import { mergedSection } from "../runner/prompt.ts";
+import { taskDelivery } from "../delivery.ts";
+import { taskView } from "../views.ts";
 import { type CommandRunner, ForgeCli } from "./forge.ts";
 import { idMatches, MergedTracker } from "./merged.ts";
 import { seenHosts, webHostProblem, WebHosts } from "./web-host.ts";
@@ -148,6 +151,117 @@ test("the same issue number in another repository ties nothing; the forge's clos
   const shown = (id: string) => t.shown(plan, plan.entities.get(id)!.entity as Task);
   assert.deepEqual(shown("ERG-SITE1"), [], "site's #44 is another issue; 'Closes #44' in compose and its closer tie nothing to it");
   assert.deepEqual(shown("ERG-COMP1").map((pr) => [pr.label, pr.by]), [["!7", ["closes_issue"]]], "the forge's own closer of compose#44, in compose");
+});
+
+test("a foreign MR that names the id in its description only is a mention; its title, branch, link or closed issue make it the work", async () => {
+  const at = "2026-11-23T10:00:00Z";
+  const foreign = (iid: number, extra: Partial<Mr> = {}): Mr => ({ iid, state: "merged", merged_at: at, branch: "security/other-card", title: "fix: another card's work", description: "", ...extra });
+  const plan = planOf([
+    // Its own branch is planned, and the MR below is on another one.
+    { id: "ERG-DESC1", project: "site", branch: "security/own-branch" },
+    { id: "ERG-TTTL1", project: "site" },
+    { id: "ERG-BRNC1", project: "site", branch: "security/planned" },
+    { id: "ERG-NAMD1", project: "site" },
+    { id: "ERG-CLSD1", project: "site" },
+    { id: "ERG-LNKD1", project: "site", links: [`${SITE}/6`] },
+    // Its earlier run reported the MR, which names it in the description only.
+    { id: "ERG-RPRT1", project: "site", status: "in_progress", run_pr: `${SITE}/7` },
+  ]);
+  const mrs = [
+    foreign(1, { description: "## Not in this MR / remaining\n- Tracked in ERG-DESC1." }),
+    foreign(2, { title: "fix: the rest (ERG-TTTL1)" }),
+    foreign(3, { branch: "security/planned", description: "ERG-BRNC1" }),
+    foreign(4, { branch: "chore/erg-namd1-diagnostics", description: "ERG-NAMD1" }),
+    foreign(5, { description: "ERG-CLSD1" }),
+    foreign(6, { description: "ERG-LNKD1" }),
+    foreign(7, { description: "ERG-RPRT1" }),
+  ];
+  const { t, space } = tracker(plan, forge({ prj_site: mrs }), { "ERG-CLSD1": [`${SITE}/5`] });
+  await t.checkAll();
+  const task = (id: string) => plan.entities.get(id)!.entity as Task;
+  const labels = (list: { label: string }[]) => list.map((pr) => pr.label);
+  assert.deepEqual(t.shown(plan, task("ERG-DESC1")), [], "a description alone is not merged work");
+  assert.deepEqual(t.peekTask(space, task("ERG-DESC1")), []);
+  assert.deepEqual(t.mentioned(plan, task("ERG-DESC1")).map((pr) => [pr.label, pr.url, pr.by]), [["!1", `${SITE}/1`, ["id_in_description"]]]);
+  for (const [id, label, way] of [
+    ["ERG-TTTL1", "!2", "id_in_title"],
+    ["ERG-BRNC1", "!3", "branch"],
+    ["ERG-NAMD1", "!4", "id_in_branch"],
+    ["ERG-CLSD1", "!5", "closes_issue"],
+    ["ERG-LNKD1", "!6", "link"],
+  ] as const) {
+    assert.deepEqual(labels(t.shown(plan, task(id))), [label], id);
+    assert.ok(t.shown(plan, task(id))[0]!.by.includes(way), `${id} by ${way}`);
+    assert.deepEqual(t.mentioned(plan, task(id)), [], id);
+  }
+  assert.deepEqual(labels(t.shown(plan, task("ERG-RPRT1"))), ["!7"], "what its run reported is its work");
+  assert.deepEqual(t.mentioned(plan, task("ERG-RPRT1")), []);
+});
+
+test("a forge that stops answering never swaps merged work read before for a mention alone", async () => {
+  const plan = planOf([{ id: "ERG-BRNC1", project: "site", branch: "security/planned" }]);
+  const mrs: Mr[] = [
+    { iid: 3, state: "merged", merged_at: "2026-11-23T10:00:00Z", branch: "security/planned" },
+    { iid: 1, state: "merged", merged_at: "2026-11-23T11:00:00Z", branch: "security/other-card", description: "See ERG-BRNC1." },
+  ];
+  let branchDown = false;
+  const answering = forge({ prj_site: mrs });
+  const flaky = new ForgeCli(async (command, args, cwd) => (branchDown && args.includes("--source-branch") ? { code: 1, stdout: "" } : answering.exec(command as "glab", args, cwd, 1_000)));
+  const { t, space } = tracker(plan, flaky);
+  const task = plan.entities.get("ERG-BRNC1")!.entity as Task;
+  await t.check(space, task);
+  assert.deepEqual(t.shown(plan, task).map((pr) => pr.label), ["!3"]);
+  branchDown = true;
+  await t.check(space, task);
+  assert.deepEqual(t.shown(plan, task).map((pr) => pr.label), ["!3"]);
+});
+
+test("a mention alone holds no start and shows as a mention in every read of the task", async () => {
+  const url = "https://github.com/acme/core/pull/41";
+  const s = await setup(undefined, {
+    forge: new ForgeCli(async (command, args) => {
+      if (command === "gh" && args[1] === "list" && args.includes("merged")) {
+        const pr = { number: 41, url, state: "MERGED", mergedAt: "2026-11-23T10:00:00Z", headRefName: "fix/other-card", isCrossRepository: false, title: "fix: another card's work", body: "Not in this PR: tracked in TST-MNT02.", mergeCommit: { oid: "abc1234def5678" } };
+        return { code: 0, stdout: JSON.stringify([pr]) };
+      }
+      return { code: 0, stdout: "[]" };
+    }),
+  });
+  try {
+    s.f.external("ergo", (root) =>
+      writeFileSync(
+        join(root, "tasks", "TST-MNT02-store.md"),
+        `---\nid: TST-MNT02\ntype: task\ntitle: Store\nstatus: todo\nproject: core\ncreated: 2026-11-20T10:00:00Z\n---\n\n## Brief\n\nDo it.\n\n## Acceptance\n\n- [ ] Code\n`,
+      ),
+    );
+    await s.sync().sync();
+    await s.dashboard.merged.checkAll();
+    const one = await reconcile(s.ctx, { task: "TST-MNT02" });
+    assert.deepEqual(one.tasks, []);
+    assert.ok(one.note.startsWith(`Mentioned in #41 (${url}): only the description names TST-MNT02`), one.note);
+    assert.doesNotMatch(one.note, /merged in/);
+    assert.deepEqual((await reconcile(s.ctx, {})).tasks, []);
+    const check = await startCheck(s.ctx, { task: "TST-MNT02" });
+    assert.notEqual(check.decision, "needs_owner", check.human);
+    assert.doesNotMatch(check.human, /merged already/);
+    assert.notEqual((await startPlan(s.ctx, { tasks: ["TST-MNT02"] })).tasks[0]?.needs, "merged");
+    const automatic = await planStart(s.ctx, { task: "TST-MNT02" }, { automatic: true });
+    assert.ok("found" in automatic, "nothing about a mention holds an automatic start");
+    const view = taskView(s.dashboard, { task: "TST-MNT02" });
+    assert.deepEqual([view.merged, view.mentioned, view.delivery], [[], [{ label: "#41", url }], false]);
+    const card = (await readBoard(s.ctx, {})).columns.flatMap((c) => c.tasks).find((c) => c.id === "TST-MNT02")!;
+    assert.equal(card.merged, undefined);
+    const delivery = await taskDelivery(s.ctx, { task: "TST-MNT02" });
+    assert.equal(delivery.steps.find((step) => step.step === "MR")!.state, "none");
+    assert.match(delivery.steps.find((step) => step.step === "MR")!.fact, /Mentioned in #41 /);
+    assert.equal(delivery.stage, "in_work");
+    const review = (await readyReview(s.ctx, { task: "TST-MNT02", limit: 20 })).tasks[0]!;
+    assert.deepEqual(review.prs.map((pr) => pr.pr), ["#41"]);
+    assert.match(review.prs[0]!.tie, /its description mentions the card.*a signal, not proof/);
+    assert.equal(s.task("TST-MNT02")!.status, "todo");
+  } finally {
+    s.stop();
+  }
 });
 
 test("merged code with open acceptance is not done: the next step names what is left and forbids a second implementation", () => {

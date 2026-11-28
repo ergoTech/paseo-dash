@@ -8,10 +8,11 @@ import { localRun } from "./api/view.ts";
 import { resolveTaskForRead, type SpaceEntry } from "./api/resolve.ts";
 import { named } from "./reconcile/facts.ts";
 import { apkText, environmentOf, isApp, variantsOf } from "./reconcile/android.ts";
+import { mentionText, mergedMentions } from "./reconcile/mentions.ts";
 import { mergeBlockers } from "./reconcile/merge.ts";
 import { cardLabel, type QaRun, type QaRunStatus, readAt } from "./qa-cards.ts";
 import { type AppFacts, afterMerge, type DeliveryStage, type MergeFact, qaState, runStep, type StageHolds, short, stageHolds, trelloCard } from "./reconcile/steps.ts";
-import { ofCard, stoppedReading } from "./reconcile/stopped.ts";
+import { followUp, goneCode, stoppedReading } from "./reconcile/stopped.ts";
 
 export { DELIVERY_STAGES, stageHolds, trelloCard } from "./reconcile/steps.ts";
 export type { AppFacts, DeliveryStage, StageHolds } from "./reconcile/steps.ts";
@@ -134,7 +135,7 @@ export function deliveryView(input: {
         step: "Code",
         state: app.unread ? "not all read" : !app.prs.length ? "none" : app.prs.every((pr) => pr.state === "merged") ? "merged" : app.prs.some((pr) => pr.state === "merged") ? "partly merged" : app.prs.every((pr) => pr.blockers.length === 0) ? "ready to merge" : "waiting to merge",
         fact: [
-          app.prs.map((pr) => `${pr.label} ${pr.state}${pr.sha ? ` (${short(pr.sha)})` : ""}${pr.state === "open" || pr.state === "draft" ? (pr.blockers.length ? `, blocked: ${pr.blockers.join("; ")}` : ", ready to merge") : ""}`).join("; ") || "no PR/MR of the card is known",
+          app.prs.map((pr) => `${pr.label} ${pr.state}${pr.sha ? ` (${short(pr.sha)})` : ""}${pr.state === "open" || pr.state === "draft" ? (pr.blockers.length ? `, blocked: ${pr.blockers.join("; ")}` : ", ready to merge") : ""}${pr.followUp ? ", a follow-up that mentions the card" : ""}`).join("; ") || "no PR/MR of the card is known",
           app.unread ? `not read: ${app.unread}` : "",
         ]
           .filter(Boolean)
@@ -230,7 +231,8 @@ async function appFacts(dashboard: Dashboard, space: SpaceEntry, task: Task): Pr
     return { prs: [], apks: variantsOf(task).map((variant) => ({ variant, environment, state: "unknown" as const, why })), trunk: "", unread: why };
   }
   // For a hold whose agent is gone, the card's work as its other checks cover it (reconcile/stopped.ts).
-  const own = facts.prs.filter((pr) => (facts.gone ? ofCard(pr, facts.trunk) : named(pr)) && pr.state !== "closed");
+  const code = facts.gone ? goneCode(facts) : named;
+  const own = facts.prs.filter((pr) => code(pr) && pr.state !== "closed");
   const noChecksOk = Boolean(dashboard.reconciler.rule(space, task)?.no_checks_ok);
   const prs = own.map((pr) => ({
     label: pr.label,
@@ -238,6 +240,7 @@ async function appFacts(dashboard: Dashboard, space: SpaceEntry, task: Task): Pr
     state: pr.state,
     mergedAt: pr.mergedAt,
     sha: pr.mergeSha,
+    ...(facts.gone && followUp(pr) ? { followUp: true } : {}),
     blockers: pr.state === "open" || pr.state === "draft" ? mergeBlockers(space.sync.plan, task, facts, pr, new Map(), noChecksOk, (id) => dashboard.reconciler.codeMerged(space, id)) : [],
   }));
   return { prs, apks: facts.gone?.apks ?? facts.apks, trunk: facts.trunk, unread: facts.unknown[0] ?? facts.gone?.unknown[0] ?? facts.limits[0]?.why ?? "" };
@@ -251,7 +254,9 @@ export async function readDelivery(dashboard: Dashboard, plan: Plan, mapping: Re
   const app = space && isApp(task) ? await appFacts(dashboard, space, task) : undefined;
   if (space && !app && dashboard.reconciler.stoppedHold(space, task, host)) await dashboard.reconciler.factsFor(space, task, 15_000);
   const gone = stoppedReading(dashboard, task, host);
-  const ours = app?.prs.filter((pr) => pr.state === "merged").sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0] ?? app?.prs[0];
+  // A follow-up is never the card's merge, however new it is.
+  const code = app?.prs.filter((pr) => !pr.followUp);
+  const ours = code?.filter((pr) => pr.state === "merged").sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0] ?? code?.[0];
   // The card's merged work, else its work still open: either says more than "no PR/MR of its run".
   const landed = gone?.landed[0];
   const found = landed ?? (gone?.pending.length ? gone.open[0] : undefined);
@@ -266,11 +271,18 @@ export async function readDelivery(dashboard: Dashboard, plan: Plan, mapping: Re
   const root = projectId ? dashboard.projectRoots.get(projectId) : undefined;
   // A gone hold's reading compared the stage with every merge of the card, not only the latest.
   const holds = gone?.holds ?? (merge?.sha && task.delivery?.stage_sha ? await stageHolds(dashboard.git, root, merge.sha, task.delivery.stage_sha) : "unknown");
-  const view = deliveryView({ task, loaded, merge, checks, holds, ...(app ? { app } : {}) });
-  if (!gone || !(gone.landed.length || gone.pending.length)) return view;
-  const more = [...gone.landed.slice(1), ...gone.related].map((pr) => `${pr.label} merged`);
-  const steps = view.steps.map((step) => (step.step === "MR" && (more.length || gone.pending.length) ? { ...step, fact: [step.fact, ...more, ...gone.pending.map((p) => p.text)].join("; ") } : step));
-  return { ...view, steps, stage: gone.stage, next_by: gone.next_by, next: gone.next };
+  let view = deliveryView({ task, loaded, merge, checks, holds, ...(app ? { app } : {}) });
+  if (gone && (gone.landed.length || gone.pending.length)) {
+    const more = gone.landed.slice(1).map((pr) => `${pr.label} merged`);
+    const steps = view.steps.map((step) => (step.step === "MR" && (more.length || gone.pending.length) ? { ...step, fact: [step.fact, ...more, ...gone.pending.map((p) => p.text)].join("; ") } : step));
+    view = { ...view, steps, stage: gone.stage, next_by: gone.next_by, next: gone.next };
+  }
+  // A PR/MR that only mentions the card is said with the code's step, and changes no stage.
+  // An app card's follow-up listed with its code is said there already.
+  const listed = new Set(app?.prs.filter((pr) => pr.followUp).map((pr) => pr.url));
+  const mentioned = space ? mentionText(task.id, mergedMentions(dashboard, space, task).filter((pr) => !listed.has(pr.url))) : "";
+  if (!mentioned) return view;
+  return { ...view, steps: view.steps.map((step) => (step.step === "MR" || step.step === "Code" ? { ...step, fact: `${step.fact}. ${mentioned}` } : step)) };
 }
 
 /** God Mode's `delivery` read: one task's way to accepted work. */

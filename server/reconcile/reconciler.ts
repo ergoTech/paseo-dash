@@ -9,12 +9,12 @@ import { type GitRunner, SAFE_BRANCH } from "../sync/git.ts";
 import { closeRevision, type Operation } from "../sync/ops.ts";
 import { prDetails } from "../tracker/details.ts";
 import { type ForgeCli, type ForgePr, prKey, prUrlOfProject } from "../tracker/forge.ts";
-import { idMatches, type MergedPr, namedIds } from "../tracker/merged.ts";
+import { idMatches, type MergedPr, mentionOnly, namedIds } from "../tracker/merged.ts";
 import type { PrView } from "../tracker/prs.ts";
 import { apkStates, buildPool, isApp } from "./android.ts";
 import { type CardFacts, type GoneFacts, type Mention, merged, mergedSince, named, type PrFact, type Scope } from "./facts.ts";
 import { type StageHolds, stageHolds } from "./steps.ts";
-import { agentGone, cardsOwn, ofCard } from "./stopped.ts";
+import { agentGone, cardsOwn, goneCode, ofCard } from "./stopped.ts";
 import { scopeSince } from "./history.ts";
 import { type Rule, ruleOf } from "./rules.ts";
 import { judgeTie, type TieIndex, tieIndex, type Way } from "./ties.ts";
@@ -142,13 +142,16 @@ export class Reconciler {
     return this.rule(space, task)?.mode === "close" ? undefined : `this machine's rule does not let ${task.project ?? "its project"} close cards`;
   }
 
-  /** An open card with something to reconcile: a PR/MR known for it, work under way or in review, or a closure of the rule undone. */
-  evidence(space: SpaceEntry, task: Task): boolean {
+  /**
+   * An open card with something to reconcile: a PR/MR known for it, work under way or in review, or a
+   * closure of the rule undone. `counts`: which ties make a PR/MR one of them; a reading takes any.
+   */
+  evidence(space: SpaceEntry, task: Task, counts: (ties: readonly string[]) => boolean = () => true): boolean {
     if (closed(task)) return false;
     if (task.auto_closed || task.run_pr || task.status === "review" || task.status === "in_progress") return true;
     if (task.links.some((link) => PR_LIKE.test(link))) return true;
-    if (this.options.merged(space.sync.plan, task).length || this.options.seen(task.id)) return true;
-    return Boolean(this.facts.get(key(space, task))?.prs.length);
+    if (this.options.merged(space.sync.plan, task).some((pr) => counts(pr.by)) || this.options.seen(task.id)) return true;
+    return Boolean(this.facts.get(key(space, task))?.prs.some((pr) => counts(pr.ways)));
   }
 
   /** Whether the card is held by a run whose agent is gone on this Mac (stopped.ts); `host` names this Mac. */
@@ -215,7 +218,7 @@ export class Reconciler {
     // A hold whose agent is gone counts more of the card's work (stopped.ts), beside the rule's own comparison.
     if (facts.gone) {
       const unread = { ...facts, unknown: [...facts.unknown, ...facts.gone.unknown] };
-      facts.gone.apks = wanted ? await apkStates(this.options.git, root, facts.trunk, task, unread, pool, (pr) => ofCard(pr, facts.trunk)) : [];
+      facts.gone.apks = wanted ? await apkStates(this.options.git, root, facts.trunk, task, unread, pool, goneCode(facts)) : [];
     }
     facts.apksKey = wanted;
   }
@@ -270,6 +273,8 @@ export class Reconciler {
     const current = this.current(space, task);
     if (this.facts.has(key(space, task)) && !current) void this.read(space, task);
     else if (current) this.coverLater(space, task, current);
+    // A PR/MR that only mentions the card is read and shown, but is no work to give a verdict on.
+    if (!this.evidence(space, task, (ties) => !mentionOnly(ties))) return undefined;
     return this.judgeCard(space, task.id, false, "latest");
   }
 

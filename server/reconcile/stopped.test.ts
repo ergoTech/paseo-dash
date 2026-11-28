@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { issueKey } from "../../shared/issues.ts";
 import { reconcile } from "../api/reconcile.ts";
 import { getTask, getTaskWithRuns, readBoard } from "../api/reads.ts";
@@ -169,7 +171,11 @@ test("#48 with the follow-up #52: open, it holds the card though only its descri
     s.github.prs = [merged(48), { ...followUp, state: "MERGED", mergedAt: soon(90), mergeSha: `${STAGE}${"1".repeat(33)}` }];
     ({ rec, need, delivery } = await reads(s));
     assert.match(need!.next, /QA tests on stage/);
-    assert.deepEqual(rec.tasks[0]!.merged.map((pr) => pr.pr), ["#48", "#52"]);
+    assert.deepEqual(rec.tasks[0]!.merged.map((pr) => pr.pr), ["#48"], "the follow-up is no merged work of the card");
+    assert.match(rec.note, /^Mentioned in #52 \(https:\/\/github\.com\/acme\/core\/pull\/52\)/);
+    assert.ok(rec.tasks[0]!.sources!.some((source) => source.label === "#52 mentions the card"));
+    assert.match(delivery.steps.find((step) => step.step === "MR")!.fact, /Mentioned in #52 /);
+    assert.doesNotMatch(delivery.steps.find((step) => step.step === "MR")!.fact, /#52 merged/);
     assert.equal(delivery.next, need!.next);
     untouched(s, s.run.run_id);
   } finally {
@@ -458,6 +464,45 @@ test("another card's PR/MR that mentions this one is never its result", async ()
     s.github.prs.push(merged(46));
     const after = await reads(s);
     assert.deepEqual(after.rec.tasks[0]!.merged.map((pr) => pr.pr), ["#46"]);
+  } finally {
+    s.stop();
+  }
+});
+
+test("an app card a merged PR/MR only mentions has no code and no build, whatever a recorded build holds", async () => {
+  const s = await held();
+  try {
+    const root = s.dashboard.projectRoots.get("prj_core")!;
+    sh(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "follow-up");
+    const sha = sh(root, "rev-parse", "HEAD").trim();
+    sh(root, "push", "--quiet", "origin", "HEAD:main");
+    const build = `{variant: phone, environment: staging, sha: ${sha}, url: "https://apk.example.com/b.apk"}`;
+    s.f.external("ergo", (clone) => {
+      const dir = join(clone, "tasks");
+      const file = join(dir, readdirSync(dir).find((name) => name.startsWith(ID))!);
+      writeFileSync(file, readFileSync(file, "utf8").replace(/^delivery: .*$/m, `delivery: {variants: [phone], qa: pending, builds: [${build}]}`));
+    });
+    await s.sync().sync();
+    s.github.prs = [merged(70, { head: "chore/other", body: `Unblocks ${ID}.`, mergeSha: sha })];
+    const { rec, delivery } = await reads(s);
+    assert.deepEqual(rec.tasks, []);
+    assert.match(rec.note, /^Mentioned in #70 /);
+    const code = delivery.steps.find((step) => step.step === "Code")!;
+    assert.equal(code.state, "none");
+    assert.match(code.fact, /no PR\/MR of the card is known.*Mentioned in #70 /);
+    assert.doesNotMatch(delivery.qa_handoff, /pull\/70|holds #70/);
+    assert.equal(delivery.steps.find((step) => step.step === "APK phone")!.state, "awaited");
+
+    // Beside work of its own the follow-up is checked with it, and said as what it is, once.
+    s.github.prs.push(merged(46, { mergeSha: sha, mergedAt: soon(30) }));
+    s.github.prs[0]!.mergedAt = soon(90);
+    const both = await reads(s);
+    const listed = both.delivery.steps.find((step) => step.step === "Code")!.fact;
+    assert.match(listed, /#46 merged [^;]*; #70 merged [^;]*, a follow-up that mentions the card|#70 merged [^;]*, a follow-up that mentions the card; #46 merged/);
+    assert.doesNotMatch(listed, /not counted/);
+    assert.match(both.delivery.steps.find((step) => step.step === "APK phone")!.fact, /holds .*#70/);
+    assert.match(both.delivery.qa_handoff, /Code: https:\/\/github\.com\/acme\/core\/pull\/46/);
+    untouched(s, s.run.run_id);
   } finally {
     s.stop();
   }

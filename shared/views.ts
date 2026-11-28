@@ -110,6 +110,8 @@ export const taskViewRpc = defineRpc({
      * created, as this machine last read them (03-model.md, Work merged outside the dashboard).
      */
     merged: z.array(mergedPr),
+    /** Merged PR/MRs that name the task in their description only: shown with a link, never as its merged work. */
+    mentioned: z.array(z.object({ label: z.string(), url: z.string() })).optional(),
     /** With a live run: what it waits on (shared/overview.ts WAIT_STATES) and the fact; null without one. */
     wait: z.object({ state: z.string(), note: z.string(), /** The one next step, for a card whose agent is gone with work merged. */ next: z.string().optional() }).nullable(),
     /** What it waits for besides tasks, each "kind: reason (checked day)". */

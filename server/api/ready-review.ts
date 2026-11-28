@@ -167,7 +167,8 @@ function recordedState(ctx: ReadContext, facts: SpaceFacts, task: Task, url: str
  * it, it names no other card, no other card is on its branch, and, for a link, no other card links it.
  */
 function ownPrs(ctx: ReadContext, facts: SpaceFacts, task: Task): { prs: OwnPr[]; merged: MergedPr[] } {
-  const found = ctx.dashboard.merged.shown(facts.plan, task);
+  // Mentions too: the review lists them as signals, and the rules below never make one the card's own.
+  const found = ctx.dashboard.merged.found(facts.plan, task);
   const others = (ids: string[] | undefined) => (ids ?? []).filter((id) => id !== task.id);
   const listed = (ids: string[]) => ids.slice(0, 3).join(", ");
   const prs: OwnPr[] = [];
