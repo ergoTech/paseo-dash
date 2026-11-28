@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { type ChatState, openSubAgents, type RunChat } from "../../shared/chats.ts";
 import { sameLabel } from "../../shared/labels.ts";
 import { type Feature, hasLiveRun, type Milestone, refId, type Task } from "../../shared/model.ts";
 import type { Plan } from "../plan/load.ts";
@@ -97,12 +98,25 @@ export function daysLeft(due: string | undefined, now: Date): number | null {
   return Math.round((toUtc(due) - toUtc(localDay(now))) / 86_400_000);
 }
 
+/** A stopped run's agent, from what was read of its chat (server/chats.ts). */
+const STOPPED_TEXT: Record<ChatState | "unread", string> = {
+  closed: "its chat is closed and can be continued",
+  archived: "its chat is archived",
+  gone: "its agent is gone",
+  unread: "its chat is not read yet",
+};
+
+function stillOpen(chat: RunChat | undefined): string {
+  const n = openSubAgents(chat).length;
+  return n ? `; ${n === 1 ? "a sub-agent" : `${n} sub-agents`} of it still open` : "";
+}
+
 /**
  * What a task's run is doing, as far as the plan says. The agent's own activity (working, waiting,
  * needs input) comes from the runner, which is not part of this version. `claiming`: this Mac's claim
  * of the run is still on its way to the plan repository (server/needs.ts), so its start has no record yet.
  */
-export function activityText(task: Task, host = localHost(), run?: RunRecord, claiming = false): string {
+export function activityText(task: Task, host = localHost(), run?: RunRecord, claiming = false, chat?: RunChat): string {
   if (!hasLiveRun(task)) return "";
   if (run && run.run_id === task.run_id) {
     switch (run.activity) {
@@ -119,7 +133,7 @@ export function activityText(task: Task, host = localHost(), run?: RunRecord, cl
       case "stopped":
         // A tracked workspace may never have had an agent the dashboard knows.
         if (run.adopted && !run.agentId) return "tracked on this Mac, without an agent in its workspace";
-        return "stopped on this Mac: its agent is gone";
+        return `stopped on this Mac: ${STOPPED_TEXT[chat?.state ?? "unread"]}${stillOpen(chat)}`;
     }
   }
   if (task.run_host === host) return claiming ? "launching on this Mac" : "started on this Mac, without an agent known here";

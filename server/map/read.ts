@@ -8,6 +8,7 @@ import type { Dashboard } from "../dashboard.ts";
 import type { Plan } from "../plan/load.ts";
 import type { SpaceEntry } from "../api/resolve.ts";
 import { buildMetro, planGlyph } from "./metro.ts";
+import { openSubAgents } from "../../shared/chats.ts";
 import { BUSY_STATUSES } from "../../shared/activity.ts";
 import { alsoIn } from "../spaces/overlap.ts";
 
@@ -16,8 +17,8 @@ const ACTIVITY_GLYPH: Record<Activity, Glyph> = {
   working: "working",
   needs_input: "needs_you",
   failed: "failed",
-  // An agent that ended its turn while the task is in progress, or is gone, waits for the person: the
-  // same facts Live lists under Needs you (server/overview.ts, kinds answer and stopped).
+  // An agent that ended its turn while the task is in progress, or is stopped, waits for the person: the
+  // same facts Live lists under Needs you (server/overview.ts, kinds answer, subagent and stopped).
   waiting: "needs_you",
   stopped: "needs_you",
 };
@@ -25,9 +26,10 @@ const ACTIVITY_GLYPH: Record<Activity, Glyph> = {
 /** A task's mark: from the plan, refined by this machine's run of it when there is one. */
 export function glyphFor(dashboard: Dashboard, plan: Plan, task: Task): Glyph {
   const run = localRun(dashboard.runs, task);
-  // A tracked trunk checkout's agent is gone at its normal end, no trouble: Needs you lists it as
+  // A tracked trunk checkout's agent is stopped at its normal end, no trouble: Needs you lists it as
   // `checkout` with the same mark, and the task waits for "Mark done".
-  if (task.status === "in_progress" && run?.adopted?.trunk && run.activity === "stopped") return "elsewhere";
+  // With a sub-agent of it still open it is Needs you's `subagent` instead, marked `!` below.
+  if (task.status === "in_progress" && run?.adopted?.trunk && run.activity === "stopped" && !openSubAgents(dashboard.chats.of(run)).length) return "elsewhere";
   if (task.status === "in_progress" && run) return ACTIVITY_GLYPH[run.activity];
   return planGlyph(plan, task);
 }

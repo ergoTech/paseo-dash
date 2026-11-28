@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { otherChat, subAgent } from "./chats.ts";
 import { liveOverlap } from "./live.ts";
 import { mergedPr } from "./board.ts";
 import { GLYPHS } from "./map.ts";
@@ -113,7 +114,11 @@ export const taskViewRpc = defineRpc({
     /** Merged PR/MRs that name the task in their description only: shown with a link, never as its merged work. */
     mentioned: z.array(z.object({ label: z.string(), url: z.string() })).optional(),
     /** With a live run: what it waits on (shared/overview.ts WAIT_STATES) and the fact; null without one. */
-    wait: z.object({ state: z.string(), note: z.string(), /** The one next step, for a card whose agent is gone with work merged. */ next: z.string().optional() }).nullable(),
+    wait: z.object({ state: z.string(), note: z.string(), /** The one next step, for a card whose agent is stopped with work merged. */ next: z.string().optional() }).nullable(),
+    /** The unarchived sub-agents of the live run whose own agent is stopped (shared/chats.ts). */
+    sub_agents: z.array(subAgent),
+    /** Sub-agents of other tasks' runs that name this task: work in another run's chat. */
+    other_chats: z.array(otherChat),
     /** What it waits for besides tasks, each "kind: reason (checked day)". */
     requires: z.array(z.string()),
     /** A person's last check that it can start: "2026-11-24: access checked"; "" when nobody checked. */

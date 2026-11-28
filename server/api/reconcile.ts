@@ -1,5 +1,6 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { RECONCILE_LEFT, type reconcileRpc } from "../../shared/api.ts";
+import { chatSaid } from "../../shared/chats.ts";
 import { hasLiveRun, type Task } from "../../shared/model.ts";
 import { mentionText, mergedMentions } from "../reconcile/mentions.ts";
 import { type StoppedReading, stoppedReading } from "../reconcile/stopped.ts";
@@ -8,7 +9,7 @@ import { type MergedPr, mergedCandidates } from "../tracker/merged.ts";
 import { webHostProblem } from "../tracker/web-host.ts";
 import type { Dashboard } from "../dashboard.ts";
 import type { Verdict } from "../reconcile/verdict.ts";
-import { cut, localHost } from "./view.ts";
+import { cut, localHost, localRun } from "./view.ts";
 import type { ReadContext } from "./reads.ts";
 import { resolveSpaces, resolveTaskForRead, type SpaceEntry } from "./resolve.ts";
 
@@ -135,7 +136,8 @@ export async function reconcile(ctx: ReadContext, input: RpcInput<typeof reconci
       const read = await dashboard.reconciler.readNow(space, task, TASK_WAIT_MS);
       const gone = stoppedReading(dashboard, task, host);
       const late = read ? "" : "No new reading of the forge was made in time; this is the last one: read again in a few minutes.";
-      if (!gone) return { tasks: [], projects, note: late || `${task.id}: its agent is gone, and its forge could not be read.`, error: "" };
+      const said = chatSaid(dashboard.chats.of(localRun(dashboard.runs, task))?.state);
+      if (!gone) return { tasks: [], projects, note: late || `${task.id}: ${said}, and its forge could not be read.`, error: "" };
       if (gone.landed.length) return { tasks: [goneRow(task, loaded, gone, dashboard.reconciler.rule(space, task)?.mode ?? "")], projects, note: noted(late), error: "" };
       return { tasks: [], projects, note: noted(late, `${task.id}: ${gone.why}. Next: ${gone.next}.`), error: "" };
     }

@@ -1,3 +1,4 @@
+import { chatSaid, openSubAgents, type RunChat } from "../../shared/chats.ts";
 import { hasLiveRun, type Task } from "../../shared/model.ts";
 import type { Dashboard } from "../dashboard.ts";
 import type { SpaceEntry } from "../api/resolve.ts";
@@ -16,7 +17,8 @@ import { type AppFacts, afterMerge, type DeliveryStage, short, type StageHolds }
  * this Mac works on it. The agent often finished its work, and the work was merged from a branch the
  * run never recorded (a second branch, a follow-up, a session of the owner's); the hold must not hide
  * that. What this module says comes from a reading of the forge (`CardFacts`, read-only) and the plan,
- * and every read tells the same sentence (needs, board, task, reconcile, delivery):
+ * and every read tells the same sentence (needs, board, task, reconcile, delivery). The sentence says
+ * what became of the agent as far as it is read (closed, archived, gone; JOBBY-HCXY5):
  *
  *  - what is merged into the target branch and is the card's own: tied by its issue's closer, its id in
  *    the branch or title, its link or a run's own report, never by a mention in a description;
@@ -92,6 +94,8 @@ export interface JudgeInput {
   /** This Mac's record of the run, for what the agent reported. */
   run: RunRecord | undefined;
   app?: AppFacts;
+  /** What became of the run's chat and its sub-agents, once read (server/chats.ts). */
+  chat?: RunChat;
 }
 
 /**
@@ -129,6 +133,9 @@ function unready(pr: PrFact): string[] {
   ].filter(Boolean);
 }
 
+/** A closed chat that is not archived goes on with a message: that comes before starting again. */
+const resumeOf = (chat: RunChat | undefined): string => (chat?.state === "closed" ? "continue its closed chat (open it in Paseo, or send_message to it)" : "");
+
 /** The step of a card whose work is merged with nothing standing before it: QA and acceptance, then the release. */
 function mergedStep(input: JudgeInput, landed: PrFact[], related: PrFact[], lineOpen: number): Pick<StoppedReading, "stage" | "next_by" | "next"> {
   const { task, facts, app } = input;
@@ -153,7 +160,7 @@ function mergedStep(input: JudgeInput, landed: PrFact[], related: PrFact[], line
     holds,
     ...(app ? { app } : {}),
     finish,
-    failed: "the fix is new work: release it to todo and start it for the fix only",
+    failed: `the fix is new work: ${resumeOf(input.chat) ? `${resumeOf(input.chat)} for the fix only` : "release it to todo and start it for the fix only"}`,
   });
   // A failure of the merged code is the one case where the card is to be started again.
   if (ladder.stage === "qa_failed") return ladder;
@@ -167,7 +174,8 @@ function mergedStep(input: JudgeInput, landed: PrFact[], related: PrFact[], line
 
 /** The reading of a card whose agent is gone, from the forge facts and the plan; pure. */
 export function judgeStopped(input: JudgeInput): StoppedReading {
-  const { plan, task, loaded, facts, run } = input;
+  const { plan, task, loaded, facts, run, chat } = input;
+  const resume = resumeOf(chat);
   const trunk = facts.trunk;
   const created = task.created;
   const lineOpen = loaded.acceptance.filter((line) => !line.done).length;
@@ -259,15 +267,18 @@ export function judgeStopped(input: JudgeInput): StoppedReading {
   let step: { stage: DeliveryStage; next_by: string; next: string };
   if (pending.length) {
     const more = pending.length > 1 ? ` (+${pending.length - 1} more)` : "";
-    step = { stage: landed.length || open.length ? "waiting_for_merge" : "in_work", next_by: "owner", next: `${pending[0]!.next}${more}; ${landed.length ? again : notTwice}` };
+    const first = resume && !landed.length ? `${resume} to go on with it, or: ` : "";
+    step = { stage: landed.length || open.length ? "waiting_for_merge" : "in_work", next_by: "owner", next: `${first}${pending[0]!.next}${more}; ${landed.length ? again : notTwice}` };
   } else if (earlier) {
     step = {
       stage: "in_work",
       next_by: "owner",
-      next: `${names} merged before this run started and the run did not report it: check what the run left (its branch and handoff); ${finish} only once nothing is left, QA and acceptance included, else start it for the rest only`,
+      next: `${names} merged before this run started and the run did not report it: check what the run left (its branch and handoff); ${finish} only once nothing is left, QA and acceptance included, else ${resume ? `${resume} for the rest only` : "start it for the rest only"}`,
     };
   } else if (!landed.length) {
-    step = { stage: "in_work", next_by: "owner", next: `no merge of its own into ${trunk || "the target branch"} is confirmed: check its branch and PR/MR, then ${finish} if it is finished, or release it to todo to start it again` };
+    const unconfirmed = `no merge of its own into ${trunk || "the target branch"} is confirmed`;
+    const release = `${finish} if it is finished, or release it to todo to start it again`;
+    step = { stage: "in_work", next_by: "owner", next: resume ? `${unconfirmed}: ${resume}; otherwise check its branch and PR/MR, then ${release}` : `${unconfirmed}: check its branch and PR/MR, then ${release}` };
   } else {
     step = mergedStep(input, landed, related, lineOpen);
     if (held) step = { ...step, next: `settle first: ${cut(held.text, 120)}; then ${step.next}` };
@@ -275,9 +286,11 @@ export function judgeStopped(input: JudgeInput): StoppedReading {
 
   const first = open[0];
   const url = first?.url ?? landed[0]?.url ?? "";
-  const gone = "its agent is gone";
+  // An open sub-agent may still be at this work: it is looked at before anything else.
+  if (openSubAgents(chat).length) step = { ...step, next: `check its open sub-agent's chat first; ${step.next}` };
+  const said = chat?.state === "closed" ? `${chatSaid("closed")} and can be continued` : chatSaid(chat?.state);
   const why = [
-    gone,
+    said,
     landed.length ? `${names} merged into ${trunk}${earlier ? " before this run started" : ""}` : "no merge of its own into the target branch is confirmed",
     pending.length ? pending[0]!.text : "",
     left,
@@ -322,5 +335,6 @@ export function stoppedReading(dashboard: Dashboard, task: Task, host: string = 
         unread: "",
       }
     : undefined;
-  return judgeStopped({ plan: space.sync.plan, task, loaded, facts, run, ...(app ? { app } : {}) });
+  const chat = dashboard.chats.of(run);
+  return judgeStopped({ plan: space.sync.plan, task, loaded, facts, run, ...(app ? { app } : {}), ...(chat ? { chat } : {}) });
 }

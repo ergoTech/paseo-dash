@@ -47,8 +47,8 @@ const CASES: Case[] = [
   { id: "TST-SQST1", title: "Agent asks questions", run: { activity: "working" }, becomes: "needs_input", running: "waiting", needs: "question", activity: /^needs your answer on this Mac/, next: /read_approval, then answer_questions with only the user's own choices; never answer_approval$/ },
   { id: "TST-SANS1", title: "Agent waits", run: { activity: "working", lastMessage: "Which release?" }, becomes: "waiting", running: "waiting", needs: "answer", activity: /^waiting for a message on this Mac$/, next: /reply/ },
   { id: "TST-SERR1", title: "Agent failed", run: { activity: "working", error: "rate limited" }, becomes: "failed", running: "failed", needs: "failed", activity: /^failed on this Mac: rate limited$/, next: /release/ },
-  // The agent is gone: no failure, yet the task is open with nobody at work on it.
-  { id: "TST-SGNE1", title: "Agent gone", task: { project: "site" }, run: { activity: "working", project: "site" }, becomes: "stopped", running: "stopped", needs: "stopped", activity: /^stopped on this Mac: its agent is gone$/, next: /release it: to done if it is finished, to todo to start it again/ },
+  // The agent is stopped, its chat not read yet (server/chats.test.ts reads it): no failure, yet the task is open with nobody at work on it.
+  { id: "TST-SGNE1", title: "Agent gone", task: { project: "site" }, run: { activity: "working", project: "site" }, becomes: "stopped", running: "stopped", needs: "stopped", activity: /^stopped on this Mac: its chat is not read yet$/, next: /release it: to done if it is finished, to todo to start it again/ },
   // JOBBY-BVG1Z as read live on 2026-10-28: a tracked checkout on main, its agent gone, its work
   // landed, its workspace still open (so the screen offers no "Mark done" yet).
   {
@@ -59,7 +59,7 @@ const CASES: Case[] = [
     becomes: "stopped",
     running: "stopped",
     needs: "checkout",
-    activity: /^stopped on this Mac: its agent is gone$/,
+    activity: /^stopped on this Mac: its chat is not read yet$/,
     next: /^its work is on origin\/main: release it to done if it is finished, or release it to todo to start it again; its workspace is still open in Paseo$/,
   },
   {
@@ -75,11 +75,11 @@ const CASES: Case[] = [
   // Held by this Mac in the plan, with no record of its agent here (runs.json lost or moved aside).
   { id: "TST-SNRC1", title: "No record here", running: "stopped", needs: "stopped", activity: /^started on this Mac, without an agent known here$/, next: /release it/ },
   { id: "TST-SRVW1", title: "In review, no PR", task: { status: "review" }, run: { activity: "waiting" }, needs: "accept", activity: /^waiting for a message on this Mac$/, next: /^accept the work, or send it back with what to change$/ },
-  { id: "TST-SRVW2", title: "In review, PR open", task: { status: "review" }, run: { activity: "stopped" }, needs: "", activity: /^stopped on this Mac: its agent is gone$/ },
+  { id: "TST-SRVW2", title: "In review, PR open", task: { status: "review" }, run: { activity: "stopped" }, needs: "", activity: /^stopped on this Mac: its chat is not read yet$/ },
   { id: "TST-SRVF1", title: "In review, agent failed", task: { status: "review" }, run: { activity: "working", error: "rate limited" }, becomes: "failed", needs: "failed", activity: /^failed on this Mac: rate limited$/, next: /release/ },
   // Its own PR/MR merged while its agent still works: the merge is the user's to decide on.
   { id: "TST-SMRG1", title: "Merged while at work", run: { activity: "working" }, running: "working", needs: "merged", activity: /^working on this Mac$/, next: /^release it to done if the work is finished; otherwise tell the agent in its chat what is left$/ },
-  { id: "TST-SMRG2", title: "In review, merged, not done", task: { status: "review" }, run: { activity: "stopped" }, needs: "merged", activity: /^stopped on this Mac: its agent is gone$/, next: /^accept the work if it is finished; otherwise release it to todo to start it again$/ },
+  { id: "TST-SMRG2", title: "In review, merged, not done", task: { status: "review" }, run: { activity: "stopped" }, needs: "merged", activity: /^stopped on this Mac: its chat is not read yet$/, next: /^accept the work if it is finished; otherwise release it to todo to start it again$/ },
   { id: "TST-SRVN1", title: "In review, no record here", task: { status: "review" }, needs: "accept", activity: /^started on this Mac, without an agent known here$/, next: /^accept the work, or release it to todo to start it again$/ },
   // Sent back only where its agent is: another machine's run there.
   { id: "TST-SRVR1", title: "In review elsewhere, no PR", task: { status: "review", run_host: "anna-mbp", run_by: "anna" }, needs: "accept", activity: /^running on anna-mbp$/, next: /^accept the work, or send it back with what to change from anna-mbp$/ },

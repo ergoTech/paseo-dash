@@ -472,7 +472,8 @@ const NEEDS_LABEL: Record<NeedsKind, string> = {
   failed: "agent failed",
   sync: "not pushed",
   answer: "agent waits",
-  stopped: "agent gone",
+  subagent: "sub-agent open",
+  stopped: "agent stopped",
   checkout: "mark done once landed",
   closed: "PR/MR closed",
   merged: "merged, not done",
@@ -488,7 +489,8 @@ const NEEDS_GLYPH: Record<NeedsKind, Glyph> = {
   failed: "failed",
   sync: "failed",
   answer: "needs_you",
-  // An agent gone is no failure either: the map draws it `!` too (server/map/read.ts).
+  subagent: "needs_you",
+  // A stopped agent is no failure either: the map draws it `!` too (server/map/read.ts).
   stopped: "needs_you",
   // A tracked trunk checkout's end is no failure: the map's mark for it too.
   checkout: "elsewhere",
@@ -608,13 +610,14 @@ const STATE_WORDS: Record<string, string> = {
   blocked: "blocked: needs you",
   failed: "failed",
   stopped: "stopped: no agent at work",
+  subagent_open: "a sub-agent still open",
   record_lost: "no record of its agent here",
   checkout: "checkout ended",
   elsewhere: "on another machine",
 };
 
 /** The states that wait for the user: the rest are at work or wait on CI, a review or a sub-agent. */
-const WAITS_FOR_USER = new Set(["needs_user_question", "approval", "answer", "blocked", "failed", "stopped", "record_lost", "checkout"]);
+const WAITS_FOR_USER = new Set(["needs_user_question", "approval", "answer", "blocked", "failed", "stopped", "subagent_open", "record_lost", "checkout"]);
 
 /** The longest answer tasks.send-back takes. */
 const REPLY_MAX = 4000;
@@ -633,6 +636,10 @@ function ago(iso: string): string {
 }
 
 type NeedsItem = NonNullable<RpcOutput<typeof overviewRpc>["needs_you"]>[number];
+
+/** A stopped run says what became of its chat, once read. */
+const CHAT_LABEL = { closed: "chat closed", archived: "chat archived", gone: "agent gone" } as const;
+const needLabel = (item: NeedsItem) => (item.kind === "stopped" && item.chat ? CHAT_LABEL[item.chat.state] : NEEDS_LABEL[item.kind]);
 
 /**
  * One thing waiting for the person, with what can be done about it in place: open the agent's chat,
@@ -680,7 +687,7 @@ function NeedsRow({ item, spaces, active, onOpen, onOpenCard, navigation, theme,
             glyph={NEEDS_GLYPH[item.kind]}
             space={spaces ? item.space : undefined}
             title={item.title}
-            note={[NEEDS_LABEL[item.kind], ago(item.since), item.why].filter(Boolean).join(" · ")}
+            note={[needLabel(item), ago(item.since), item.why].filter(Boolean).join(" · ")}
             active={active}
             onPress={onOpen}
             theme={theme}
@@ -688,8 +695,17 @@ function NeedsRow({ item, spaces, active, onOpen, onOpenCard, navigation, theme,
           />
         </View>
         {item.kind === "answer" && item.chat_id ? <Button label="Reply" ghost onPress={() => setReplying(!replying)} styles={styles} /> : null}
-        {item.chat_id && navigation ? <Button label="Open chat" ghost onPress={() => navigation.openAgent({ agentId: item.chat_id })} styles={styles} /> : null}
+        {item.chat_id && navigation ? (
+          <Button
+            // The row's chat is a sub-agent's when it is not the stopped run's own.
+            label={item.chat && item.chat.id !== item.chat_id ? "Open sub-agent" : "Open chat"}
+            ghost
+            onPress={() => navigation.openAgent({ agentId: item.chat_id })}
+            styles={styles}
+          />
+        ) : null}
       </View>
+      {item.chat && navigation ? <ChatLinks chat={item.chat} shown={item.chat_id} navigation={navigation} styles={styles} /> : null}
       {item.cards?.length ? <NeedCards item={item} onOpen={(task, title) => onOpenCard?.(task, title)} theme={theme} styles={styles} /> : null}
       {replying ? (
         <View style={[styles.row, { gap: 6 }]}>
@@ -705,6 +721,21 @@ function NeedsRow({ item, spaces, active, onOpen, onOpenCard, navigation, theme,
           <Button label={busy ? "Sending…" : "Send"} disabled={busy || !text.trim() || text.length > REPLY_MAX} onPress={() => void reply()} styles={styles} />
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/** The chats of a stopped run besides the row's own button: the run's closed or archived one, and every unarchived sub-agent. */
+function ChatLinks({ chat, shown, navigation, styles }: { chat: NonNullable<NeedsItem["chat"]>; shown: string; navigation: NonNullable<PluginScreenProps["navigation"]>; styles: Styles }) {
+  const subs = chat.sub_agents.filter((sub) => sub.id !== shown);
+  const own = chat.state !== "gone" && chat.id !== shown;
+  if (!own && !subs.length) return null;
+  return (
+    <View style={[styles.row, { flexWrap: "wrap", gap: 6 }]}>
+      {own ? <Button label={`Open the run's ${chat.state} chat`} ghost onPress={() => navigation.openAgent({ agentId: chat.id })} styles={styles} /> : null}
+      {subs.map((sub) => (
+        <Button key={sub.id} label={`Open sub-agent ${sub.id.slice(0, 8)} (${sub.state.replace("_", " ")})`} ghost onPress={() => navigation.openAgent({ agentId: sub.id })} styles={styles} />
+      ))}
     </View>
   );
 }

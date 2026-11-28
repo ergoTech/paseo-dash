@@ -11,6 +11,8 @@ import { taskChecks } from "../result.ts";
 import { settled } from "../runner/testing.ts";
 import { taskView } from "../views.ts";
 import { sh } from "../sync/testing.ts";
+import { PARENT_AGENT_LABEL } from "../wait.ts";
+import { writeRule } from "./rules.ts";
 import { type FakePr, PR_URL, reconcileSetup } from "./testing.ts";
 
 /**
@@ -82,7 +84,7 @@ test("#46: merged from another branch than the run's, closing the issue, with QA
     assert.doesNotMatch(rec.note, /has a live run/);
 
     assert.deepEqual([need?.kind, board.needs, task.needs], ["merged", "merged", "merged"]);
-    assert.match(need!.why, /its agent is gone; #46 \(5ba9e1d\) merged into main/);
+    assert.match(need!.why, /its agent is stopped; #46 \(5ba9e1d\) merged into main/);
     const next = need!.next;
     assert.match(next, /QA tests on stage/);
     assert.match(next, /tick the 2 open acceptance line\(s\)/);
@@ -760,7 +762,7 @@ test("merged work that waits only for an open QA card is a qa wait with that car
     s.github.prs = [merged(46)];
     const { need, board, task, delivery } = await reads(s);
     assert.deepEqual([need?.kind, board.needs, task.needs], ["qa", "qa", "qa"]);
-    assert.match(need!.why, /^Trello #12 open when read 2026-01-02 14:03Z; its agent is gone; #46/);
+    assert.match(need!.why, /^Trello #12 open when read 2026-01-02 14:03Z; its agent is stopped; #46/);
     assert.deepEqual(need!.cards![0]!.links.slice(0, 2), [
       { label: "#12", url: card },
       { label: "#46 merged", url: PR_URL(46) },
@@ -823,6 +825,78 @@ test("a reconcile that joins a reading begun before the stop reads once more", a
     release();
     await early;
     assert.deepEqual((await answer).tasks.map((row) => row.merged.map((pr) => pr.pr)), [["#46"]]);
+  } finally {
+    s.stop();
+  }
+});
+
+test("a closed chat comes before starting the card again in every read, and an open sub-agent before that", async () => {
+  const s = await held();
+  try {
+    writeRule(s.dashboard.dataDir, { space: "TST", project: "core", mode: "report", no_checks_ok: false });
+    s.fake.agents.get(s.run.agentId!)!.status = "closed";
+    await s.dashboard.chats.read();
+
+    // Nothing of it on the forge.
+    let { need, delivery } = await reads(s);
+    assert.match(need!.why, /^its chat is closed, not archived: it can be continued; /);
+    assert.match(need!.next, /^continue its chat /);
+    // The closing rule's hold on the claim says the same, and does not offer a second start.
+    const claim = s.dashboard.reconciler["judgeCard"](s.space(), ID, false, "latest")!.holds.find((hold) => hold.code === "claim")!;
+    assert.match(claim.text, /; its chat is closed$/);
+    assert.equal(claim.next, "continue its closed chat if work is left, or release it: to done if the work is finished");
+
+    // A forge that is not read in time is no reason to call the agent gone.
+    assert.doesNotMatch((await reconcile(s.ctx, { task: ID })).note, /agent is gone/);
+
+    // An open draft of its own: continuing the chat is the way on, before closing or merging it.
+    s.github.prs = [{ n: 47, state: "OPEN", draft: true, checks: ["SUCCESS"], head: `fix/${ID.toLowerCase()}-work-47`, body: `Task: ${ID}` }];
+    ({ need, delivery } = await reads(s));
+    assert.equal(need!.kind, "stopped");
+    assert.match(need!.why, /^its chat is closed and can be continued; /);
+    assert.match(need!.next, /^continue its closed chat .* to go on with it, or: #47 is a draft/);
+    assert.equal(delivery.next, need!.next);
+
+    // A sub-agent of the run still open: looked at first, in every read.
+    s.fake.agents.set("sub-1", { ...s.fake.agents.get(s.run.agentId!)!, id: "sub-1", status: "idle", labels: { [PARENT_AGENT_LABEL]: s.run.agentId! } });
+    await s.dashboard.chats.read();
+    s.github.prs = [merged(46)];
+    await reconcile(s.ctx, { task: ID });
+    const after = await reads(s);
+    assert.equal(after.need!.kind, "subagent");
+    assert.equal(after.need!.chat_id, "sub-1");
+    assert.match(after.need!.why, /^its sub-agent sub-1 is idle.*; #4[67]/);
+    assert.match(after.need!.next, /^check its open sub-agent's chat first; /);
+    assert.deepEqual([after.board.next, after.task.next, after.delivery.next], [after.need!.next, after.need!.next, after.need!.next]);
+    untouched(s, s.run.run_id);
+  } finally {
+    s.stop();
+  }
+});
+
+test("an open sub-agent of the stopped run comes before a qa wait, which stays in the next step", async () => {
+  const card = "https://trello.com/c/AbCd1234";
+  const open = `qa_cards: [{url: "${card}", checked: "2026-01-02T14:03:00Z", state: open, name: "#12 · Sign-in"}]\n`;
+  const s = await held(`${QA}${open}`);
+  try {
+    const agent = s.fake.agents.get(s.run.agentId!)!;
+    agent.status = "closed";
+    s.fake.agents.set("sub-1", { ...agent, id: "sub-1", status: "idle", labels: { [PARENT_AGENT_LABEL]: s.run.agentId! } });
+    await s.dashboard.chats.read();
+    s.github.prs = [merged(46)];
+    const { need, task, delivery } = await reads(s);
+    assert.deepEqual([need?.kind, need?.chat_id], ["subagent", "sub-1"]);
+    assert.match(need!.next, /^check its open sub-agent's chat first; /);
+    assert.deepEqual([task.next, delivery.next], [need!.next, need!.next]);
+    assert.match(task.state!, /^subagent_open: /);
+
+    // In review nothing but the QA card waits: the qa need, and the state still names the sub-agent.
+    await s.sync().record([{ op_id: "op-review", kind: "transition", id: ID, to: "review", run_id: s.run.run_id, at: new Date().toISOString() }]).outcomes;
+    const later = await reads(s);
+    assert.equal(later.need?.kind, "qa");
+    assert.match(later.need!.why, /its chat is closed and can be continued/);
+    assert.match(later.task.state!, /^subagent_open: /);
+    untouched(s, s.run.run_id, "review");
   } finally {
     s.stop();
   }

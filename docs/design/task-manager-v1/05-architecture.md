@@ -982,8 +982,9 @@ On plugin start, after `dashboard.hello`, and every few minutes:
    the trust path; labels play no part in it, and the plugin sets none on an agent it did not create.
    Such a run is reconciled by its stored agent id like any other, and, for a run on the trunk, its
    workspace is refreshed to see whether it was archived.
-4. Runs whose agent is gone become `stopped`. An `in_progress` task with no agent of this machine at
-   work (gone, a run this machine holds in the plan but has no record of, or a tracked trunk checkout
+4. Runs whose agent is closed, archived or gone become `stopped`; what became of the chat is read
+   apart (06-god-mode.md, Stopped runs and their chats). An `in_progress` task with no agent of this
+   machine at work (stopped, a run this machine holds in the plan but has no record of, or a tracked trunk checkout
    whose agent ended) is a Needs you item with its next step: release it to done when the work is
    finished, or to todo to start it again (06-god-mode.md, One state in every read). Its run keeps
    holding the task until a person releases it, and, when this machine has its record, a place under

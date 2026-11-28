@@ -12,7 +12,7 @@ import type { RunRecord } from "./runner/runs.ts";
  * not move it.
  *
  * Covered: what says how work is going, which is the plans and their sync state, the runs, the task
- * events, the PR/MR and issue views, and how many run histories finished reading. A new store of that
+ * events, the PR/MR and issue views, the chats read for stopped runs, and how many run histories finished reading. A new store of that
  * kind goes in here too.
  *
  * Not covered, and shown on the reserve read or after this client's own change: settings-like state
@@ -62,7 +62,7 @@ export function changesToken(dashboard: Dashboard): string {
   const issues = [...dashboard.issues.seen].map(([key, { at: _at, ...view }]) => [key, view]).sort(byKey);
   const merged = [...dashboard.merged.seen].map(([key, { at: _at, ...view }]) => [key, view]).sort(byKey);
   return hash(
-    JSON.stringify([spaces, runs, events, dashboard.events?.latest ?? 0, prs, issues, merged, dashboard.runHistory.settled, dashboard.warnings.length, dashboard.follower.revision]),
+    JSON.stringify([spaces, runs, events, dashboard.events?.latest ?? 0, prs, issues, merged, dashboard.runHistory.settled, dashboard.warnings.length, dashboard.follower.revision, dashboard.chats.revision]),
   );
 }
 
@@ -76,6 +76,7 @@ const LANDED_POLL_MS = 60_000;
  */
 export function readChanges(dashboard: Dashboard): RpcOutput<typeof changesRpc> {
   dashboard.peekPrs();
+  dashboard.chats.peek();
   for (const run of dashboard.runs?.runs.values() ?? []) if (run.adopted?.trunk && dashboard.isLive(run)) dashboard.peekLanded(run, LANDED_POLL_MS);
   return { token: changesToken(dashboard) };
 }

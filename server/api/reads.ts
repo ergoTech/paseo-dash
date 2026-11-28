@@ -1,3 +1,4 @@
+import type { OtherChat, RunChat } from "../../shared/chats.ts";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { overlapText } from "../../shared/live.ts";
 import { type Feature, hasLiveRun, isArchived, refId, startable, type Task, unheld } from "../../shared/model.ts";
@@ -242,11 +243,25 @@ function searchFacts(found: Found<unknown> | undefined): { partial?: true; searc
   return { ...(found?.partial ? { partial: true as const } : {}), ...(found?.searchedFor ? { searched_for: found.searchedFor } : {}) };
 }
 
+/** Sub-agents of other tasks' runs that name this task (server/chats.ts); none for finished work. */
+function otherChats(ctx: ReadContext, task: Task): { other_chats?: OtherChat[] } {
+  if (task.status === "done" || task.status === "canceled") return {};
+  const chats = ctx.dashboard.chats.naming(task.id);
+  return chats.length ? { other_chats: chats } : {};
+}
+
+/** What became of a stopped run's chat, once read. */
+function chatOf(ctx: ReadContext, run: RunRecord | undefined): { chat?: RunChat } {
+  const chat = ctx.dashboard.chats.of(run);
+  return chat ? { chat } : {};
+}
+
 /** One task as tasks.list and the board show it. */
 function taskRowOf(ctx: ReadContext, plan: Plan, task: Task, host: string, match?: TaskMatch): TaskRow {
   const waits = blockers(plan, task);
   const release = plan.entities.get(milestoneOf(plan, task) ?? "")?.entity;
   const needed = needOf(ctx.dashboard, task, host);
+  const run = localRun(ctx.dashboard.runs, task);
   return withoutEmpty({
     id: task.id,
     title: task.title,
@@ -256,7 +271,7 @@ function taskRowOf(ctx: ReadContext, plan: Plan, task: Task, host: string, match
     glyph: task.status === "inbox" || task.status === "canceled" ? "todo" : glyphFor(ctx.dashboard, plan, task),
     priority: task.priority ?? plan.space?.defaults.priority ?? "medium",
     release: release?.type === "milestone" ? release.title : "",
-    activity: activityText(task, host, localRun(ctx.dashboard.runs, task), claiming(ctx.dashboard, task)),
+    activity: activityText(task, host, run, claiming(ctx.dashboard, task), ctx.dashboard.chats.of(run)),
     needs: needed?.kind ?? "",
     next: needed?.next ?? "",
     project: task.project ?? "",
@@ -266,6 +281,8 @@ function taskRowOf(ctx: ReadContext, plan: Plan, task: Task, host: string, match
     blocked_by: waits.join("; "),
     matched_in: match?.field ?? "",
     quote: match?.quote ?? "",
+    ...chatOf(ctx, run),
+    ...otherChats(ctx, task),
   });
 }
 
@@ -389,14 +406,16 @@ export function getTask(ctx: ReadContext, input: RpcInput<typeof tasksGetRpc>): 
     id: task.id,
     title: task.title,
     status: task.status,
-    activity: activityText(task, host, run, claiming(ctx.dashboard, task)),
+    activity: activityText(task, host, run, claiming(ctx.dashboard, task), ctx.dashboard.chats.of(run)),
     needs: needed?.kind ?? "",
     next: needed?.next ?? "",
     ...(live ? { state: stateText(ctx, task, host) } : {}),
     progress: progressText(task, loaded.acceptance),
     blocked_by: blockers(plan, task).join("; "),
     pr: live ? prText(ctx.dashboard.prs.seen.get(task.id), task) || mergedPrText(ctx, task, host) : (task.run_pr ?? ""),
-    chat_id: run?.agentId ?? "",
+    chat_id: ctx.dashboard.chats.of(run)?.state === "gone" ? "" : (run?.agentId ?? ""),
+    ...chatOf(ctx, run),
+    ...otherChats(ctx, task),
     project: task.project ?? "",
     feature: titleOf(plan, refId(task.feature)),
     milestone: titleOf(plan, milestoneOf(plan, task)),

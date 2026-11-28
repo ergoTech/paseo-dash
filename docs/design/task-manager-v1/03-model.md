@@ -797,6 +797,10 @@ its agent waits it can occupy one of the autopilot's places until it is released
 
 #### A hold whose agent is gone
 
+"Gone" here means not at work; the sentence the reads show says what became of the chat as far as it
+is read (closed, archived or gone), puts continuing a closed chat before a new start, and names an
+open sub-agent first ([Stopped runs and their chats](06-god-mode.md#stopped-runs-and-their-chats)).
+
 A live run in `in_progress` or `review` whose agent this Mac knows is gone (the run is stopped, or this
 Mac started it and has no record of its agent; not a claim still on its way, not a tracked checkout on
 the trunk) is read from the forge in every project, with no rule switched on. The reading is the

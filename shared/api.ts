@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { otherChat, runChat } from "./chats.ts";
 import { GLYPHS } from "./map.ts";
 import { ISSUE_URL_MAX } from "./issues.ts";
 import { PRIORITIES, QA_CARD_STATES, REQUIREMENT_KINDS } from "./model.ts";
@@ -102,6 +103,10 @@ export const taskRow = z.object({
   matched_in: z.string().optional(),
   /** With a query: a short piece of that field around the match. */
   quote: z.string().optional(),
+  /** For a run whose agent is stopped: what became of its chat, and its unarchived sub-agents. */
+  chat: runChat.optional(),
+  /** Sub-agents of other tasks' runs whose title or labels name this task: work in another run's chat. */
+  other_chats: z.array(otherChat).optional(),
 });
 
 /** What else a query names: features, releases and projects by their names (server/search/core.ts namedThings). */
@@ -165,6 +170,10 @@ export const tasksGetRpc = defineRpc({
     blocked_by: z.string(),
     pr: z.string(),
     chat_id: z.string(),
+    /** For a run whose agent is stopped: what became of its chat, and its unarchived sub-agents. */
+    chat: runChat.optional(),
+    /** Sub-agents of other tasks' runs whose title or labels name this task: work in another run's chat. */
+    other_chats: z.array(otherChat).optional(),
     project: z.string(),
     feature: z.string(),
     milestone: z.string(),

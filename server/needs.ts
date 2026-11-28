@@ -1,3 +1,4 @@
+import { CHATS_LISTED, type ChatState, chatSaid, openSubAgents, type RunChat } from "../shared/chats.ts";
 import { hasLiveRun, type Task } from "../shared/model.ts";
 import type { NeedsKind, Overview, WaitState } from "../shared/overview.ts";
 import type { Dashboard } from "./dashboard.ts";
@@ -19,7 +20,7 @@ export type RunActivity = Overview["running"][number]["activity"];
 
 export interface Need {
   kind: NeedsKind;
-  /** The chat the user answers in when it is not the run's own agent's: a sub-agent asking. */
+  /** The chat the user answers in when it is not the run's own agent's: a sub-agent's. */
   chatId?: string;
   /** The fact, one line of at most WHY_CHARS: the agent's request or error, the PR/MR, the landed reading. */
   why: string;
@@ -45,6 +46,13 @@ const NEXT = {
   question: QUESTION_NEXT,
   failed: "read the error in the agent's chat; tell it to go on there, or release the task (to todo to start it again)",
   stopped: "check its branch and PR/MR for the work, then release it: to done if it is finished, to todo to start it again",
+  // Stopped, its chat not read yet: said apart from an agent that is gone.
+  stoppedUnread: "check its chat in Paseo and continue it if it is there; otherwise release it: to done if it is finished, to todo to start it again",
+  // A closed chat keeps its context: continuing it comes before releasing the task (JOBBY-HCXY5).
+  stoppedClosed: "continue its chat (open it in Paseo, or send_message to it with God Mode); otherwise release it: to done if it is finished, to todo to start it again",
+  // The run's chat is closed and a sub-agent of it is open: that one is looked at before anything new starts.
+  subClosed: "check the sub-agent's chat, then continue the run's closed chat (open it in Paseo, or send_message); otherwise release it: to done if finished, to todo to start again",
+  sub: "check the sub-agent's chat (open it in Paseo, or send_message to it) before anything new starts; then release the task: to done if finished, to todo to start again",
   sync: "fix the plan repository's access on this Mac (Paseo Dash settings show the error); the changes then push by themselves",
 } as const;
 
@@ -87,15 +95,21 @@ export function waitState(dashboard: Dashboard, task: Task, host = localHost(), 
   if (need?.kind === "permission") return { state: "approval", note: need.why };
   if (need?.kind === "failed") return { state: "failed", note: need.why };
   if (need?.kind === "checkout") return { state: "checkout", note: need.why };
-  // Merged work of a card whose agent is gone, QA's wait included: the agent is still gone, and the note says what is merged.
-  if ((need?.kind === "merged" || need?.kind === "qa") && (run ? run.activity === "stopped" : task.run_host === host)) return { state: run ? "stopped" : "record_lost", note: need.why };
+  // Merged work of a card whose agent is stopped, QA's wait included: it is still stopped, and the note
+  // says what is merged. With a sub-agent of it still open, the state below says that instead.
+  if ((need?.kind === "merged" || need?.kind === "qa") && (run ? run.activity === "stopped" && !openSubAgents(dashboard.chats.of(run)).length : task.run_host === host)) return { state: run ? "stopped" : "record_lost", note: need.why };
   if (need?.kind === "stopped") return { state: run ? "stopped" : "record_lost", note: need.why };
+  if (need?.kind === "subagent") return { state: "subagent_open", note: need.why };
   if (need?.kind === "answer") return { state: run?.waitingOn?.kind !== "user" && /^blocked: /.test(task.progress_note ?? "") ? "blocked" : "answer", note: need.why };
   if (!run) return task.run_host !== host ? { state: "elsewhere", note: `on ${task.run_host ?? "another machine"}` } : { state: claiming(dashboard, task) ? "launching" : "record_lost", note: "" };
   if (run.activity === "launching") return { state: "launching", note: "" };
   if (run.activity === "waiting" && task.status === "in_progress") return idleWait(dashboard, run, now) ?? { state: "answer", note: "" };
   if (run.activity === "waiting" && task.status === "review") return { state: "waiting_for_review", note: "its work is in review" };
-  if (run.activity === "stopped") return { state: "stopped", note: "" };
+  // In review too: the run's agent is stopped, and a sub-agent of it may still be at the work.
+  if (run.activity === "stopped") {
+    const chat = dashboard.chats.of(run);
+    return chat && openSubAgents(chat).length ? { state: "subagent_open", note: flat(subAgentWhy(chat)) } : { state: "stopped", note: "" };
+  }
   return { state: "working", note: "" };
 }
 
@@ -130,14 +144,43 @@ export function claiming(dashboard: Dashboard, task: Task): boolean {
   return false;
 }
 
+/** A stopped run's agent in the words of `why`, from what was read of its chat. */
+const CHAT_WHY: Record<ChatState | "unread", string> = {
+  closed: "its chat is closed, not archived: it can be continued",
+  archived: "its chat is archived",
+  gone: "its agent is gone while the task is still open",
+  unread: "its agent is stopped; its chat is not read yet",
+};
+
+const SUB_STATE_WORDS = { needs_input: "asks", working: "at work", idle: "idle", failed: "failed", closed: "closed" } as const;
+
+/** A stopped run's closed sub-agents, named so their work is not done twice: "; sub-agent a1b2c3d4 closed too". */
+function closedSubAgents(chat: RunChat | undefined): string {
+  const [first, ...rest] = (chat?.sub_agents ?? []).filter((sub) => sub.state === "closed");
+  if (!first) return "";
+  // The list is cut at CHATS_LISTED: a full one may stand for more.
+  const more = rest.length + 1 >= CHATS_LISTED ? " or more" : "";
+  return rest.length ? `; ${rest.length + 1}${more} closed sub-agents` : `; sub-agent ${first.id.slice(0, 8)} closed too`;
+}
+
+/** The first open sub-agent of a stopped run (the others counted), then what became of the run's own chat. */
+function subAgentWhy(chat: RunChat): string {
+  const [first, ...rest] = openSubAgents(chat);
+  const where = first!.directory.split("/").filter(Boolean).pop();
+  const more = rest.length ? ` and ${rest.length} more` : "";
+  const own = chat.state === "gone" ? "the run's agent is gone" : `the run's chat is ${chat.state}`;
+  return `its sub-agent ${first!.id.slice(0, 8)} is ${SUB_STATE_WORDS[first!.state]}${where ? ` in ${where}` : ""}${more}; ${own}`;
+}
+
 /**
  * The other way for work in review than accepting it (accept_task, send_back; JOBBY-5YRRY): sending
  * it back reaches only this Mac's agent while it is there and waits (server/result.ts sendBack);
  * another machine's run is sent back there, and with no agent at work (this Mac's run without a
  * record here included) it starts again.
  */
-function sendBackStep(task: Task, run: RunRecord | undefined, what: string, host: string): string {
+function sendBackStep(task: Task, run: RunRecord | undefined, what: string, host: string, chat: ChatState | undefined): string {
   if (!run && task.run_host !== host) return `send it back ${what} from ${task.run_host ?? "the machine that runs it"}`;
+  if (chat === "closed") return `continue its closed chat ${what} (open it in Paseo, or send_message to it), or release it to todo to start it again`;
   if (!run?.agentId || run.activity === "stopped") return "release it to todo to start it again";
   if (run.activity === "working" || run.activity === "launching") return `send it back ${what} once its agent waits`;
   return `send it back ${what}`;
@@ -171,12 +214,13 @@ export function runActivity(dashboard: Dashboard, task: Task, host = localHost()
 
 /**
  * What waits for the user on a task's live run, if anything: one fact per task, the strongest first.
- * The agent asking (a permission, or questions to the user) or failing; then, with the agent gone, work of
- * the task merged into the target branch (`qa` when only a recorded QA card's run is left); then the run's own PR/MR merged without the task done, which says more
+ * The agent asking (a permission, or questions to the user) or failing; then, for a task in progress whose
+ * agent is stopped, a sub-agent of it still open; then, with the agent stopped, work of the task merged
+ * into the target branch (`qa` when only a recorded QA card's run is left); then the run's own PR/MR merged without the task done, which says more
  * than an agent waiting or gone after it; then, for a task in progress, its agent waiting after a
  * turn; then the PR/MR closed while nobody works on it; then no agent at work while the task is in
- * progress (gone, none known here, or a tracked trunk checkout's normal end, which only a person moves
- * on); then a review with no PR/MR. In review an agent may well have closed once its PR/MR was open:
+ * progress (closed, archived or gone, none known here, or a tracked trunk checkout's normal end, which
+ * only a person moves on); then a review with no PR/MR. In review an agent may well have closed once its PR/MR was open:
  * that task waits for the merge.
  */
 export function needOf(dashboard: Dashboard, task: Task, host = localHost(), now = Date.now()): Need | undefined {
@@ -187,20 +231,28 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost(), now
   const open = task.status === "in_progress";
   const busy = run?.activity === "working" || run?.activity === "launching";
   const need = (kind: NeedsKind, why: string, next: string, since = ""): Need => ({ kind, why, next, since });
+  // What became of a stopped run's chat and its sub-agents (server/chats.ts); undefined until read.
+  const chat = dashboard.chats.of(run);
   if (run?.activity === "needs_input") {
     const kind = run.waitingKind === "question" ? "question" : "permission";
     return need(kind, flat(run.waitingFor ?? "waits for your answer"), NEXT[kind], run.activityAt);
   }
   // A sub-agent's question or permission is the user's as much as the agent's own: a child at work never hides it.
-  const child = run && run.activity !== "stopped" ? dashboard.waits.facts.get(run.run_id)?.asking : undefined;
+  const child = !run ? undefined : run.activity === "stopped" ? dashboard.chats.asking(run) : dashboard.waits.facts.get(run.run_id)?.asking;
   if (child) {
     const kind = child.kind === "question" ? "question" : "permission";
     return { ...need(kind, flat(`a sub-agent asks: ${child.text}`), kind === "question" ? NEXT.question.replace("the agent's chat", "the sub-agent's chat") : "answer it in the sub-agent's chat", run!.activityAt), chatId: child.agentId };
   }
   if (run?.activity === "failed") return need("failed", flat(run.error ?? "the agent failed"), NEXT.failed, run.activityAt);
-  // An agent gone while its run holds the task: work merged from any branch says more than "gone", and
+  // An agent stopped while its run holds the task: work merged from any branch says more than that, and
   // what is left of it is the step, never a second start of the same work (server/reconcile/stopped.ts).
   const gone = stoppedReading(dashboard, task, host);
+  // A sub-agent still open is its own state: work may go on, and a new start could repeat it.
+  if (open && run?.activity === "stopped" && chat && openSubAgents(chat).length) {
+    const merged = gone?.landed.length ? `; ${gone.landed.map((pr) => pr.label).join(", ")} merged` : "";
+    const next = gone?.next ?? (chat.state === "closed" ? NEXT.subClosed : NEXT.sub);
+    return { ...need("subagent", flat(`${subAgentWhy(chat)}${merged}`), next, run.activityAt), chatId: openSubAgents(chat)[0]!.id };
+  }
   if (gone?.qa) {
     const links = gone.qa.map(({ card }) => ({ label: cardLabel(card), url: card.url }));
     return { ...need("qa", flat(`Trello ${gone.qa.map(openCard).join("; ")}; ${gone.why}`), gone.next, run?.activityAt ?? ""), links: [...links, ...gone.sources] };
@@ -212,7 +264,7 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost(), now
   if (own?.state === "merged") {
     const left =
       task.status === "review"
-        ? `accept the work if it is finished; otherwise ${sendBackStep(task, run, "with what is left", host)}`
+        ? `accept the work if it is finished; otherwise ${sendBackStep(task, run, "with what is left", host, chat?.state)}`
         : `release it to done if the work is finished; otherwise tell the agent ${talk(task, run)} what is left`;
     return need("merged", flat(`${own.label} ${own.note ?? "merged"}`), left);
   }
@@ -236,9 +288,11 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost(), now
     // A tracked workspace may never have had an agent the dashboard knows.
     const none = Boolean(run.adopted) && !run.agentId;
     if (run.adopted?.trunk) {
-      return need("checkout", flat(`${none ? "tracked without an agent" : "its agent is gone, a tracked checkout's normal end"}; ${landedText(run)}`), checkoutNext(run), run.activityAt);
+      const next = chat?.state === "closed" ? `continue its chat if work is left (open it in Paseo, or send_message to it); otherwise ${checkoutNext(run)}` : checkoutNext(run);
+      return need("checkout", flat(`${none ? "tracked without an agent" : `${chatSaid(chat?.state)}, a tracked checkout's normal end`}; ${landedText(run)}`), next, run.activityAt);
     }
-    return need("stopped", flat(`${none ? "tracked on this Mac without an agent in its workspace" : "its agent is gone while the task is still open"}; ${leftBehind(dashboard, task)}`), NEXT.stopped, run.activityAt);
+    const next = none || chat?.state === "archived" || chat?.state === "gone" ? NEXT.stopped : chat ? NEXT.stoppedClosed : NEXT.stoppedUnread;
+    return need("stopped", flat(`${none ? "tracked on this Mac without an agent in its workspace" : CHAT_WHY[chat?.state ?? "unread"]}${closedSubAgents(chat)}; ${leftBehind(dashboard, task)}`), next, run.activityAt);
   }
   // Not a run that ended: this Mac lost the record of its agent (runs.json moved aside, another Paseo home).
   if (open && !run && task.run_host === host && !claiming(dashboard, task)) return need("stopped", flat(`started on this Mac, but this Mac has no record of its agent (not an ended run); ${leftBehind(dashboard, task)}`), NEXT.stopped);
@@ -250,7 +304,7 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost(), now
       run?.reportedPr
         ? flat(`the agent reported ${run.reportedPr}; its state is not known yet (is gh or glab logged in here?)`)
         : "the agent reported the work done without a PR/MR: accept it or send it back",
-      `${run?.reportedPr ? `check ${flat(run.reportedPr)}, then ` : ""}accept the work, or ${sendBackStep(task, run, "with what to change", host)}`,
+      `${run?.reportedPr ? `check ${flat(run.reportedPr)}, then ` : ""}accept the work, or ${sendBackStep(task, run, "with what to change", host, chat?.state)}`,
     );
   }
   return undefined;
