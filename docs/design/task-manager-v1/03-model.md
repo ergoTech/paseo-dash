@@ -689,7 +689,7 @@ What each card says is left:
 
 While a card is not settled: the Delivery read says it, also on a merged or done task (a done task
 reads `qa_unclear`, `ready_for_qa` or, with QA recorded as failed, `qa_failed`, not `accepted`); Needs you lists a card needing clarification,
-and any unsettled card of a done task; the closing rule holds the task. Nothing here changes a status,
+any unsettled card of a done task, and the open card that is all a held task with merged work and no agent waits for; the closing rule holds the task. Nothing here changes a status,
 records a QA result (`delivery.qa` stays a person's) or starts, stops or restarts a run.
 
 #### App delivery
@@ -783,7 +783,8 @@ automatic closing verifies, and changes none of them. A run of another machine i
 
 - **Merged** means the card's own PR/MR (issue closer, id in the branch or title, link or run report;
   never a description mention) merged into the target branch. A title ties it here, with nothing
-  giving it to another card, though not for a closing. Then Needs you says `merged`, and overview,
+  giving it to another card, though not for a closing. Then Needs you says `merged` (`qa` when only the
+  run of a QA card read open is left), and overview,
   board, task, `reconcile` and `delivery` say the same next step.
 - Every check covers the same merges: the card's own and the **follow-ups** that name it in their
   description. A PR/MR whose source is the target branch (a release, a promotion) is not counted.

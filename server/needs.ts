@@ -5,6 +5,7 @@ import type { RunRecord } from "./runner/runs.ts";
 import { cut, localHost, localRun } from "./api/view.ts";
 import { landedText } from "./tracker/landed.ts";
 import { stoppedReading } from "./reconcile/stopped.ts";
+import { cardLabel, openCard } from "./qa-cards.ts";
 
 /**
  * One task's state as every read tells it (06-god-mode.md, One state in every read): what its run's
@@ -26,6 +27,8 @@ export interface Need {
   next: string;
   /** Since when it waits, ISO time, where known; else "". */
   since: string;
+  /** A `qa` wait's cards and the merged work behind it, as links. */
+  links?: { label: string; url: string }[];
 }
 
 /** A reason as one short line: an agent's message or a provider's error can be long and multi-line. */
@@ -84,8 +87,8 @@ export function waitState(dashboard: Dashboard, task: Task, host = localHost(), 
   if (need?.kind === "permission") return { state: "approval", note: need.why };
   if (need?.kind === "failed") return { state: "failed", note: need.why };
   if (need?.kind === "checkout") return { state: "checkout", note: need.why };
-  // Merged work of a card whose agent is gone: the agent is still gone, and the note says what is merged.
-  if (need?.kind === "merged" && (run ? run.activity === "stopped" : task.run_host === host)) return { state: run ? "stopped" : "record_lost", note: need.why };
+  // Merged work of a card whose agent is gone, QA's wait included: the agent is still gone, and the note says what is merged.
+  if ((need?.kind === "merged" || need?.kind === "qa") && (run ? run.activity === "stopped" : task.run_host === host)) return { state: run ? "stopped" : "record_lost", note: need.why };
   if (need?.kind === "stopped") return { state: run ? "stopped" : "record_lost", note: need.why };
   if (need?.kind === "answer") return { state: run?.waitingOn?.kind !== "user" && /^blocked: /.test(task.progress_note ?? "") ? "blocked" : "answer", note: need.why };
   if (!run) return task.run_host !== host ? { state: "elsewhere", note: `on ${task.run_host ?? "another machine"}` } : { state: claiming(dashboard, task) ? "launching" : "record_lost", note: "" };
@@ -169,7 +172,7 @@ export function runActivity(dashboard: Dashboard, task: Task, host = localHost()
 /**
  * What waits for the user on a task's live run, if anything: one fact per task, the strongest first.
  * The agent asking (a permission, or questions to the user) or failing; then, with the agent gone, work of
- * the task merged into the target branch; then the run's own PR/MR merged without the task done, which says more
+ * the task merged into the target branch (`qa` when only a recorded QA card's run is left); then the run's own PR/MR merged without the task done, which says more
  * than an agent waiting or gone after it; then, for a task in progress, its agent waiting after a
  * turn; then the PR/MR closed while nobody works on it; then no agent at work while the task is in
  * progress (gone, none known here, or a tracked trunk checkout's normal end, which only a person moves
@@ -198,6 +201,10 @@ export function needOf(dashboard: Dashboard, task: Task, host = localHost(), now
   // An agent gone while its run holds the task: work merged from any branch says more than "gone", and
   // what is left of it is the step, never a second start of the same work (server/reconcile/stopped.ts).
   const gone = stoppedReading(dashboard, task, host);
+  if (gone?.qa) {
+    const links = gone.qa.map(({ card }) => ({ label: cardLabel(card), url: card.url }));
+    return { ...need("qa", flat(`Trello ${gone.qa.map(openCard).join("; ")}; ${gone.why}`), gone.next, run?.activityAt ?? ""), links: [...links, ...gone.sources] };
+  }
   if (gone?.landed.length) return need("merged", flat(gone.why), gone.next, run?.activityAt ?? "");
   // Nothing merged, but work of it standing: the agent is gone all the same, and the step is that work.
   // A review whose run's own PR/MR is known waits for its merge as before.
