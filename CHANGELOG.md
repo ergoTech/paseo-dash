@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### A description mention is not merged work
+
+- A merged PR/MR that names a task only in its description is a mention, not the task's merged work: the
+  task screen, `delivery` and `reconcile` of that task say "Mentioned in" with its link. By itself it
+  holds no start (the managed queue's included), gets no reconciliation verdict and moves no delivery
+  stage. For a task whose agent is gone, such a follow-up is still checked with the task's own work
+  (target branch, stage build, QA, app builds) and can hold it back. The task's branch, its links, its
+  id in the title or source branch, having closed its issue and its run's report still make a PR/MR its
+  work.
+
 ### A QA wait is named in Needs you
 
 - A task whose agent is gone with its work merged reads `qa` instead of `merged`, with the card's link,
