@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### A QA wait is named in Needs you
+
+- A task whose agent is gone with its work merged reads `qa` instead of `merged`, with the card's link,
+  when the one step left is QA on a recorded Trello card read open. An open PR/MR, a missing stage
+  build, a setup, a decision or a person's step keeps `merged`.
+
 ### Merged work of a run whose agent is gone
 
 - A task in progress or in review whose agent is gone on this Mac no longer reads as "no PR/MR": its

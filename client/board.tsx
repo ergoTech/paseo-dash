@@ -356,7 +356,7 @@ function BoardCard({ card, column, active, onOpen, onDrop, onDragEnd, act, onArc
         {card.blocked_by ? (
           <Text style={styles.muted} numberOfLines={2}>{`⊘ waits for ${card.blocked_by}`}</Text>
         ) : null}
-        {card.needs === "merged" && card.next ? (
+        {(card.needs === "merged" || card.needs === "qa") && card.next ? (
           <Text style={styles.text} numberOfLines={4}>{`✓ Merged work waits: ${card.next}`}</Text>
         ) : null}
         {card.unheld ? (

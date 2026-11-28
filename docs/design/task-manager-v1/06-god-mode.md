@@ -976,6 +976,7 @@ The steps (`next`), per kind:
 | `closed` | reopen it or tell the agent; or release the task (to todo to start it again, or to canceled) |
 | `merged` | in review: accept the work if it is finished, otherwise send it back with what is left; in progress: release it to done if the work is finished, otherwise tell the agent what is left |
 | `accept` | accept the work, or send it back with what to change (`accept_task`, `send_back`) |
+| `qa` | a recorded QA card: say what replaced it, or get its run done and record the result (QA cards below) |
 
 Sending back reaches only this Mac's agent while it is there and waits (`send_back` refuses
 otherwise), so that half of the step follows the run: "once its agent waits" while it works, "from
@@ -1059,7 +1060,9 @@ time, two after errors, and a brief past 1,200 characters could not be read whol
   `Trello <card>` step per card (state, when read, replacement and its evidence, proof, who is next),
   the stage `qa_unclear` for an archived card nothing replaces, and `qa_cards` for the screen.
   `overview.needs_you` has the kind `qa`: such a card, or a done task whose card is not settled, with
-  the card's link.
+  the card's link. So is a held task whose agent is gone with its work merged, when the one step left
+  is QA on a card read open (no open PR/MR, stage build, setup, decision or person's step before it): `qa` instead of
+  `merged`, with the card's and the PR/MR's links and the same next step in every read.
 - Needs you (`overview.needs_you`) has two more kinds for a reconciled project: `merge` is one list of
   every open PR/MR in the order to merge them (the card a PR/MR depends on first; those nothing holds
   back before those something does), each with `ready` and its own `blockers` (CI, review, whether the

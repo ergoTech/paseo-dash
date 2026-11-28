@@ -707,6 +707,41 @@ test("an unsettled QA card is the step of a merged card whose agent is gone: arc
   }
 });
 
+test("merged work that waits only for an open QA card is a qa wait with that card, and merged again once something comes first", async () => {
+  const card = "https://trello.com/c/AbCd1234";
+  const open = `qa_cards: [{url: "${card}", checked: "2026-01-02T14:03:00Z", state: open, name: "#12 · Sign-in"}]\n`;
+  const s = await held(`${QA}${open}`);
+  try {
+    s.github.prs = [merged(46)];
+    const { need, board, task, delivery } = await reads(s);
+    assert.deepEqual([need?.kind, board.needs, task.needs], ["qa", "qa", "qa"]);
+    assert.match(need!.why, /^Trello #12 open when read 2026-01-02 14:03Z; its agent is gone; #46/);
+    assert.deepEqual(need!.cards![0]!.links.slice(0, 2), [
+      { label: "#12", url: card },
+      { label: "#46 merged", url: PR_URL(46) },
+    ]);
+    assert.deepEqual([need!.next, task.next], [delivery.next, delivery.next]);
+    assert.equal(task.state?.startsWith("stopped"), true, task.state);
+    assert.equal(readOverview(s.dashboard, {}, HOST).needs_you.filter((n) => n.task === ID).length, 1, "said once");
+    untouched(s, s.run.run_id);
+  } finally {
+    s.stop();
+  }
+  for (const [front, why] of [
+    [`${QA}${open}requires: [{kind: decision, reason: pick one of the two fixes}]\n`, "a decision comes first"],
+    [`delivery: {trello: "${card}"}\n${open}`, "no stage build is recorded"],
+    [QA, "no QA card is recorded"],
+  ] as const) {
+    const other = await held(front);
+    try {
+      other.github.prs = [merged(46)];
+      assert.equal((await reads(other)).need?.kind, "merged", why);
+    } finally {
+      other.stop();
+    }
+  }
+});
+
 test("a revert holds a card only while its work has not come back, and the card's own revert is its work", async () => {
   const s = await held("", { acceptance: ["[x] Code works"] });
   try {
